@@ -1,0 +1,88 @@
+#version 460
+
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer A {
+  float16_t buffer_a[];
+};
+
+layout(std430, set = 0, binding = 1) readonly buffer B {
+  float16_t buffer_b[];
+};
+
+layout(std430, set = 0, binding = 2) readonly buffer bias {
+  float16_t buffer_bias[];
+};
+
+layout(std430, set = 0, binding = 3) writeonly buffer C {
+  float16_t buffer_c[];
+};
+
+layout(push_constant) uniform Dimensions {
+  uint M;
+  uint N;
+  uint K;
+};
+
+shared f16vec2 lds_a0[640];
+shared f16vec2 lds_a1[640];
+
+void main() {
+  const uint tid = gl_LocalInvocationID.x;
+  const uint row0 = gl_WorkGroupID.y << 1u;
+  const uint row1 = row0 + 1u;
+  const uint col = (gl_WorkGroupID.x << 7u) + tid;
+  const uint K_dw = K >> 1u;
+  for (uint k_dw = tid; k_dw < K_dw; k_dw += 128u) {
+    const uint elem_idx = k_dw << 1u;
+    const f16vec2 v0 = (row0 < M) ? f16vec2(buffer_a[row0 * K + elem_idx],
+                                            buffer_a[row0 * K + elem_idx + 1u])
+                                  : f16vec2(0.0hf);
+    const f16vec2 v1 = (row1 < M) ? f16vec2(buffer_a[row1 * K + elem_idx],
+                                            buffer_a[row1 * K + elem_idx + 1u])
+                                  : f16vec2(0.0hf);
+    lds_a0[k_dw] = v0;
+    lds_a1[k_dw] = v1;
+  }
+  barrier();
+  if (col < N) {
+    f16vec2 acc0 = f16vec2(0.0hf);
+    f16vec2 acc1 = f16vec2(0.0hf);
+    uint k_dw = 0u;
+    for (; k_dw + 1u < K_dw; k_dw += 2u) {
+      const uint elem0 = k_dw << 1u;
+      const f16vec2 a0_0 = lds_a0[k_dw];
+      const f16vec2 a1_0 = lds_a1[k_dw];
+      const f16vec2 b_pair0 =
+          f16vec2(buffer_b[elem0 * N + col], buffer_b[(elem0 + 1u) * N + col]);
+      acc0 = fma(a0_0, b_pair0, acc0);
+      acc1 = fma(a1_0, b_pair0, acc1);
+      const uint elem1 = (k_dw + 1u) << 1u;
+      const f16vec2 a0_1 = lds_a0[k_dw + 1u];
+      const f16vec2 a1_1 = lds_a1[k_dw + 1u];
+      const f16vec2 b_pair1 =
+          f16vec2(buffer_b[elem1 * N + col], buffer_b[(elem1 + 1u) * N + col]);
+      acc0 = fma(a0_1, b_pair1, acc0);
+      acc1 = fma(a1_1, b_pair1, acc1);
+    }
+    for (; k_dw < K_dw; ++k_dw) {
+      const uint elem = k_dw << 1u;
+      const f16vec2 b_pair =
+          f16vec2(buffer_b[elem * N + col], buffer_b[(elem + 1u) * N + col]);
+      acc0 = fma(lds_a0[k_dw], b_pair, acc0);
+      acc1 = fma(lds_a1[k_dw], b_pair, acc1);
+    }
+    const float16_t b_val = buffer_bias[col];
+    const float16_t out0 = acc0.x + acc0.y + b_val;
+    const float16_t out1 = acc1.x + acc1.y + b_val;
+    if (row0 < M) {
+      buffer_c[row0 * N + col] = out0;
+    }
+    if (row1 < M) {
+      buffer_c[row1 * N + col] = out1;
+    }
+  }
+}
