@@ -3,6 +3,7 @@
 !.cargo/config.toml
 !shaders/*.comp
 !src/*.rs
+!.gitattributes
 !.gitignore
 !build.rs
 !Cargo.toml
