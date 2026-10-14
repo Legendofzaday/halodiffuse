@@ -5,19 +5,19 @@
 
 layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
 
-layout(std430, set = 0, binding = 0) readonly buffer A {
+layout(std430, set = 0, binding = 0) readonly restrict buffer A {
   float16_t buffer_a[];
 };
 
-layout(std430, set = 0, binding = 1) readonly buffer B {
+layout(std430, set = 0, binding = 1) readonly restrict buffer B {
   float16_t buffer_b[];
 };
 
-layout(std430, set = 0, binding = 2) readonly buffer bias {
+layout(std430, set = 0, binding = 2) readonly restrict buffer bias {
   float16_t buffer_bias[];
 };
 
-layout(std430, set = 0, binding = 3) writeonly buffer C {
+layout(std430, set = 0, binding = 3) writeonly restrict buffer C {
   float16_t buffer_c[];
 };
 
