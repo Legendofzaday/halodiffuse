@@ -78,11 +78,9 @@ void main() {
     const float16_t b_val = buffer_bias[col];
     const float16_t out0 = acc0.x + acc0.y + b_val;
     const float16_t out1 = acc1.x + acc1.y + b_val;
-    if (row0 < M) {
+    if (row0 < M)
       buffer_c[row0 * N + col] = out0;
-    }
-    if (row1 < M) {
+    if (row1 < M)
       buffer_c[row1 * N + col] = out1;
-    }
   }
 }
