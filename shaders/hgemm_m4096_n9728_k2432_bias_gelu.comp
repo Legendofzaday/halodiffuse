@@ -181,7 +181,7 @@ void main() {
       barrier();
     }
   }
-  const uint c_r_base = block_row + ((tid >> 7u) << 6u) + (tid & 15u);
+  const uint c_r_base = block_row + (tid >> 7u << 6u) + (tid & 15u);
   const uint c_c_base =
       block_col + (((tid >> 5u) & 3u) << 6u) + (((tid & 31u) >> 4u) << 3u);
   const f16vec4 exp_coef = f16vec4(-2.455078125hf);
