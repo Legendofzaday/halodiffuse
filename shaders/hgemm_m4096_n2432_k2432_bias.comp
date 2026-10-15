@@ -87,7 +87,7 @@ void main() {
     for (uint l = 0u; l < 4u; ++l)
       c_frag[e][l] = MatAcc(0.0);
   for (uint i = 0u; i < 2432u; i += 128u) {
-    const bool next = (i + 128u) < 2432u;
+    const bool next = i + 128u < 2432u;
     if (next) {
       [[unroll]] for (uint j = 0u; j < 8u; ++j) {
         const uint a_off = a_idx + 9728u * j + 32u;
