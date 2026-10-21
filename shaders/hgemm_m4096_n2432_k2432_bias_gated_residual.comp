@@ -31,9 +31,15 @@ layout(std430, set = 0, binding = 2) readonly restrict buffer bias {
   f16vec4 buffer_bias[];
 };
 
-layout(std430, set = 0, binding = 3) writeonly restrict buffer C {
-  f16vec4 buffer_c[];
+layout(std430, set = 0, binding = 3) readonly restrict buffer gate {
+  f16vec4 buffer_gate[];
 };
+
+layout(std430, set = 0, binding = 4) readonly restrict buffer residual {
+  f16vec4 buffer_residual[];
+};
+
+layout(std430, set = 0, binding = 5) restrict buffer C { f16vec4 buffer_c[]; };
 
 shared f16vec4 a_lds[128][32];
 shared f16vec4 b_lds[128][32];
@@ -182,16 +188,20 @@ void main() {
       block_col + (((tid >> 5u) & 1u) << 6u) + (((tid & 31u) >> 4u) << 3u);
   [[unroll]] for (uint l = 0u; l < 4u; ++l) {
     const uint col_vec4_idx = (c_c_base + (l << 4u)) >> 2u;
-    const f16vec4 bias0 = buffer_bias[col_vec4_idx];
-    const f16vec4 bias1 = buffer_bias[col_vec4_idx + 1u];
+    const vec4 bias0 = vec4(buffer_bias[col_vec4_idx]);
+    const vec4 bias1 = vec4(buffer_bias[col_vec4_idx + 1u]);
+    const vec4 gate0 = vec4(buffer_gate[col_vec4_idx]);
+    const vec4 gate1 = vec4(buffer_gate[col_vec4_idx + 1u]);
     [[unroll]] for (uint e = 0u; e < 2u; ++e) {
       const uint row_idx = c_r_base + (e << 4u);
-      const uint c_row_offset = row_idx * 608u;
-      const MatOut d = MatOut(c_frag[e][l]);
-      buffer_c[c_row_offset + col_vec4_idx] =
-          f16vec4(d[0], d[1], d[2], d[3]) + bias0;
-      buffer_c[c_row_offset + col_vec4_idx + 1u] =
-          f16vec4(d[4], d[5], d[6], d[7]) + bias1;
+      const uint c_idx = row_idx * 608u + col_vec4_idx;
+      const MatAcc acc = c_frag[e][l];
+      const vec4 d0 = vec4(acc[0], acc[1], acc[2], acc[3]);
+      const vec4 d1 = vec4(acc[4], acc[5], acc[6], acc[7]);
+      const vec4 res0 = vec4(buffer_c[c_idx]);
+      const vec4 res1 = vec4(buffer_c[c_idx + 1u]);
+      buffer_c[c_idx] = f16vec4(fma(d0 + bias0, gate0, res0));
+      buffer_c[c_idx + 1u] = f16vec4(fma(d1 + bias1, gate1, res1));
     }
   }
 }
