@@ -35,11 +35,7 @@ layout(std430, set = 0, binding = 3) readonly restrict buffer gate {
   f16vec4 buffer_gate[];
 };
 
-layout(std430, set = 0, binding = 4) readonly restrict buffer residual {
-  f16vec4 buffer_residual[];
-};
-
-layout(std430, set = 0, binding = 5) restrict buffer C { f16vec4 buffer_c[]; };
+layout(std430, set = 0, binding = 4) restrict buffer C { f16vec4 buffer_c[]; };
 
 shared f16vec4 a_lds[128][32];
 shared f16vec4 b_lds[128][32];
