@@ -1,0 +1,67 @@
+#version 460
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_KHR_memory_scope_semantics : require
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly restrict buffer A {
+  f16vec4 buffer_a[];
+};
+
+layout(std430, set = 0, binding = 1) readonly restrict buffer B {
+  f16vec4 buffer_b[];
+};
+
+layout(std430, set = 0, binding = 2) readonly restrict buffer bias {
+  f16vec4 buffer_bias[];
+};
+
+layout(std430, set = 0, binding = 3) writeonly restrict buffer C {
+  f16vec4 buffer_c[];
+};
+
+shared f16vec4 c_lds[608];
+shared vec4 wave_sums[8][32];
+
+void main() {
+  const uint tid = gl_LocalInvocationID.x;
+  c_lds[tid] = buffer_a[tid];
+  c_lds[tid + 256u] = buffer_a[tid + 256u];
+  if (tid < 96u) {
+    c_lds[tid + 512u] = buffer_a[tid + 512u];
+  }
+  const uint n_tid = tid & 31u;
+  const uint k_tid = tid >> 5u;
+  const uint col_vec4_idx = (gl_WorkGroupID.x << 5u) + n_tid;
+  vec4 acc = vec4(0.0f);
+  uint b_idx = (k_tid << 2u) * 3648u + col_vec4_idx;
+  barrier();
+  [[unroll]] for (uint i = 0u; i < 76u; ++i) {
+    const uint k_vec4_idx = (i << 3u) + k_tid;
+    const vec4 a_val = vec4(c_lds[k_vec4_idx]);
+    const vec4 b0 = vec4(buffer_b[b_idx]);
+    const vec4 b1 = vec4(buffer_b[b_idx + 3648u]);
+    const vec4 b2 = vec4(buffer_b[b_idx + 7296u]);
+    const vec4 b3 = vec4(buffer_b[b_idx + 10944u]);
+    acc = fma(vec4(a_val.x), b0, acc);
+    acc = fma(vec4(a_val.y), b1, acc);
+    acc = fma(vec4(a_val.z), b2, acc);
+    acc = fma(vec4(a_val.w), b3, acc);
+    b_idx += 116736u;
+  }
+  wave_sums[k_tid][n_tid] = acc;
+  barrier();
+  if (k_tid < 4u) {
+    wave_sums[k_tid][n_tid] += wave_sums[k_tid + 4u][n_tid];
+  }
+  barrier();
+  if (k_tid == 0u) {
+    const vec4 sum = (wave_sums[0][n_tid] + wave_sums[1][n_tid]) +
+                     (wave_sums[2][n_tid] + wave_sums[3][n_tid]);
+    const vec4 b = vec4(buffer_bias[col_vec4_idx]);
+    buffer_c[col_vec4_idx] = f16vec4(sum + b);
+  }
+}
