@@ -1,0 +1,85 @@
+#version 460
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly restrict buffer QIn {
+  f16vec4 buffer_q[];
+};
+
+layout(std430, set = 0, binding = 1) readonly restrict buffer KIn {
+  f16vec4 buffer_k[];
+};
+
+layout(std430, set = 0, binding = 2) readonly restrict buffer GammaQ {
+  f16vec4 gamma_q[];
+};
+
+layout(std430, set = 0, binding = 3) readonly restrict buffer GammaK {
+  f16vec4 gamma_k[];
+};
+
+layout(std430, set = 0, binding = 4) writeonly restrict buffer QKOut {
+  f16vec4 buffer_qk_out[];
+};
+
+f16vec4 rmsnorm_head_d64(const f16vec4 val_f16, const f16vec4 gamma_f16) {
+  const vec4 d = vec4(val_f16);
+  const vec4 g = vec4(gamma_f16);
+  float sum_sq = d.x * d.x;
+  sum_sq = fma(d.y, d.y, sum_sq);
+  sum_sq = fma(d.z, d.z, sum_sq);
+  sum_sq = fma(d.w, d.w, sum_sq);
+  sum_sq += subgroupShuffleXor(sum_sq, 8u);
+  sum_sq += subgroupShuffleXor(sum_sq, 4u);
+  sum_sq += subgroupShuffleXor(sum_sq, 2u);
+  sum_sq += subgroupShuffleXor(sum_sq, 1u);
+  const float rstd = inversesqrt(fma(sum_sq, 0.015625f, 1e-6));
+  return f16vec4(d * rstd * g);
+}
+
+void main() {
+  const uint tid = gl_LocalInvocationID.x;
+  const uint wgid = gl_WorkGroupID.x;
+  const uint in_row_base = wgid * 608u;
+  const uint out_q_base = wgid * 1216u;
+  const uint out_k_base = out_q_base + 608u;
+  f16vec4 r_q[2];
+  f16vec4 r_k[2];
+  f16vec4 r_gq[2];
+  f16vec4 r_gk[2];
+  [[unroll]] for (uint i = 0u; i < 2u; ++i) {
+    const uint col_v4 = (i << 8u) + tid;
+    r_q[i] = buffer_q[in_row_base + col_v4];
+    r_k[i] = buffer_k[in_row_base + col_v4];
+    r_gq[i] = gamma_q[col_v4];
+    r_gk[i] = gamma_k[col_v4];
+  }
+  f16vec4 r_tail_in;
+  f16vec4 r_tail_gamma;
+  if (tid < 192u) {
+    const bool is_k = tid >= 96u;
+    const uint tail_col = 512u + (is_k ? (tid - 96u) : tid);
+    r_tail_in = is_k ? buffer_k[in_row_base + tail_col]
+                     : buffer_q[in_row_base + tail_col];
+    r_tail_gamma = is_k ? gamma_k[tail_col] : gamma_q[tail_col];
+  }
+  [[unroll]] for (uint i = 0u; i < 2u; ++i) {
+    const uint col_v4 = (i << 8u) + tid;
+    buffer_qk_out[out_q_base + col_v4] = rmsnorm_head_d64(r_q[i], r_gq[i]);
+    buffer_qk_out[out_k_base + col_v4] = rmsnorm_head_d64(r_k[i], r_gk[i]);
+  }
+  if (tid < 192u) {
+    const f16vec4 norm_tail = rmsnorm_head_d64(r_tail_in, r_tail_gamma);
+    const bool is_k = tid >= 96u;
+    const uint tail_col = 512u + (is_k ? (tid - 96u) : tid);
+    const uint out_idx = (is_k ? out_k_base : out_q_base) + tail_col;
+    buffer_qk_out[out_idx] = norm_tail;
+  }
+}
