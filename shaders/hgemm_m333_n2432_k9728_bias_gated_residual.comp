@@ -11,7 +11,7 @@ const uint TILE_N = 16;
 const uint TILE_K = 16;
 
 #define MatA coopmat<float16_t, gl_ScopeSubgroup, TILE_M, TILE_K, gl_MatrixUseA>
-#define MatB coopmat<float16_t, gl_ScopeSubgroup, TILE_K, TILE_M, gl_MatrixUseB>
+#define MatB coopmat<float16_t, gl_ScopeSubgroup, TILE_K, TILE_N, gl_MatrixUseB>
 #define MatAcc                                                                 \
   coopmat<float, gl_ScopeSubgroup, TILE_M, TILE_N, gl_MatrixUseAccumulator>
 #define MatOut                                                                 \
