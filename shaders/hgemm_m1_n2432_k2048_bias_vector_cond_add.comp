@@ -21,7 +21,11 @@ layout(std430, set = 0, binding = 2) readonly restrict buffer bias {
   f16vec4 buffer_bias[];
 };
 
-layout(std430, set = 0, binding = 3) writeonly restrict buffer C {
+layout(std430, set = 0, binding = 3) readonly restrict buffer cond {
+  f16vec4 buffer_cond[];
+};
+
+layout(std430, set = 0, binding = 4) writeonly restrict buffer C {
   f16vec4 buffer_c[];
 };
 
@@ -63,6 +67,7 @@ void main() {
   if (wave_id == 0u) {
     const uint out_col_idx = wg_col_base + col_id;
     const vec4 b = vec4(buffer_bias[out_col_idx]);
-    buffer_c[out_col_idx] = f16vec4(block_sum + b);
+    const vec4 c = vec4(buffer_cond[out_col_idx]);
+    buffer_c[out_col_idx] = f16vec4(block_sum + b + c);
   }
 }
