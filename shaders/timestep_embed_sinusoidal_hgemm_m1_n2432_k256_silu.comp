@@ -9,8 +9,8 @@
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
-layout(std430, set = 0, binding = 0) readonly restrict buffer A {
-  f16vec4 buffer_a[];
+layout(std430, set = 0, binding = 0) readonly restrict buffer T {
+  float buffer_t[];
 };
 
 layout(std430, set = 0, binding = 1) readonly restrict buffer B {
@@ -26,8 +26,13 @@ shared vec4 wave_sums[8][33];
 
 void main() {
   const uint tid = gl_LocalInvocationID.x;
-  if (tid < 64u) {
-    c_lds[tid] = buffer_a[tid];
+  if (tid < 32u) {
+    const float t = buffer_t[0];
+    const vec4 j = vec4(tid << 2u) + vec4(0.0f, 1.0f, 2.0f, 3.0f);
+    const vec4 exponent = j * -0.071955784156f;
+    const vec4 emb = exp(exponent) * t;
+    c_lds[tid] = f16vec4(cos(emb));
+    c_lds[tid + 32u] = f16vec4(sin(emb));
   }
   const uint n_tid = tid & 31u;
   const uint k_tid = tid >> 5u;
