@@ -8,15 +8,25 @@
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
-layout(std430, set = 0, binding = 0) readonly restrict buffer In {
-  f16vec4 buffer_in[];
+layout(push_constant) uniform PushConstants { float dt; }
+pc;
+
+layout(std430, set = 0, binding = 0) readonly restrict buffer V {
+  f16vec4 buffer_v[];
 };
 
-layout(std430, set = 0, binding = 1) writeonly restrict buffer Out {
+layout(std430, set = 0, binding = 1) readonly restrict buffer X {
+  f16vec4 buffer_x[];
+};
+
+layout(std430, set = 0, binding = 2) writeonly restrict buffer Out {
   f16vec2 buffer_out[];
 };
 
 shared f16vec4 lds_data[16][17];
+
+const float INV_VAE_SCALE = 1.0f / 1.5305f;
+const float VAE_SHIFT = 0.0609f;
 
 void main() {
   const uint tid = gl_LocalInvocationID.x;
@@ -24,7 +34,11 @@ void main() {
   const uint global_in_idx = (wg_id << 8u) + tid;
   const uint in_patch_local = tid >> 4u;
   const uint in_c = tid & 15u;
-  lds_data[in_patch_local][in_c] = buffer_in[global_in_idx];
+  const vec4 v = vec4(buffer_v[global_in_idx]);
+  const vec4 x = vec4(buffer_x[global_in_idx]);
+  const vec4 x_final = fma(v, vec4(pc.dt), x);
+  lds_data[in_patch_local][in_c] =
+      f16vec4(fma(x_final, vec4(INV_VAE_SCALE), vec4(VAE_SHIFT)));
   barrier();
   const uint out_c = tid >> 4u;
   const uint out_patch_local = tid & 15u;

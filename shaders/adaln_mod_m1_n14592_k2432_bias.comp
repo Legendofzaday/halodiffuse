@@ -30,6 +30,7 @@ shared vec4 wave_sums[8][33];
 
 void main() {
   const uint tid = gl_LocalInvocationID.x;
+  const uint stream_id = gl_WorkGroupID.y;
   c_lds[tid] = buffer_a[tid];
   c_lds[tid + 256u] = buffer_a[tid + 256u];
   if (tid < 96u) {
@@ -40,7 +41,7 @@ void main() {
   const uint wg_col_base = gl_WorkGroupID.x << 5u;
   const uint col_vec4_idx = wg_col_base + n_tid;
   vec4 acc = vec4(0.0f);
-  uint b_idx = (k_tid << 2u) * 3648u + col_vec4_idx;
+  uint b_idx = stream_id * 8871936u + (k_tid << 2u) * 3648u + col_vec4_idx;
   barrier();
   [[unroll]] for (uint i = 0u; i < 76u; ++i) {
     const uint k_vec4_idx = (i << 3u) + k_tid;
@@ -64,7 +65,7 @@ void main() {
   block_sum += subgroupShuffleDown(block_sum, 2u);
   block_sum += subgroupShuffleDown(block_sum, 1u);
   if (wave_id == 0u) {
-    const uint out_col_idx = wg_col_base + col_id;
+    const uint out_col_idx = stream_id * 3648u + wg_col_base + col_id;
     const vec4 b = vec4(buffer_bias[out_col_idx]);
     buffer_c[out_col_idx] = f16vec4(block_sum + b);
   }

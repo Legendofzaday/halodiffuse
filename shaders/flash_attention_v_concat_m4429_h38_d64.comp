@@ -24,11 +24,15 @@ layout(std430, set = 0, binding = 0) readonly restrict buffer QK {
   f16vec4 buffer_qk[];
 };
 
-layout(std430, set = 0, binding = 1) readonly restrict buffer V {
-  f16vec4 buffer_v[];
+layout(std430, set = 0, binding = 1) readonly restrict buffer XQKV {
+  f16vec4 buffer_x_qkv[];
 };
 
-layout(std430, set = 0, binding = 2) writeonly restrict buffer Out {
+layout(std430, set = 0, binding = 2) readonly restrict buffer CtxQKV {
+  f16vec4 buffer_ctx_qkv[];
+};
+
+layout(std430, set = 0, binding = 3) writeonly restrict buffer Out {
   f16vec4 buffer_out[];
 };
 
@@ -50,8 +54,11 @@ void main() {
   const float16_t q_scale = float16_t(0.18033688hf);
   uint k_idx = 1216u * (seq_base + (tid >> 3u)) + 608u + head_v4_off +
                ((tid & 7u) << 1u);
-  uint v_idx =
-      608u * (seq_base + ((tid >> 4u) << 2u)) + head_v4_off + (tid & 15u);
+  const uint v_row_in_tile = (tid >> 4u) << 2u;
+  const uint v_col_off = 1216u + head_v4_off + lane_mod16;
+  uint v_x_idx = 1824u * (batch_idx * 4096u + v_row_in_tile) + v_col_off;
+  const uint v_ctx_base =
+      1824u * (batch_idx * 333u + v_row_in_tile) + v_col_off;
   {
     const uint c_pair = tid & 7u;
     [[unroll]] for (uint i = 0u; i < 4u; ++i) {
@@ -111,11 +118,11 @@ void main() {
     const uint d_base = lane_mod16 << 2u;
     [[unroll]] for (uint i = 0u; i < 2u; ++i) {
       const uint r_v4 = (i << 3u) + (tid >> 4u);
-      const uint v_off = v_idx + 19456u * i;
-      const f16vec4 v0 = buffer_v[v_off];
-      const f16vec4 v1 = buffer_v[v_off + 608u];
-      const f16vec4 v2 = buffer_v[v_off + 1216u];
-      const f16vec4 v3 = buffer_v[v_off + 1824u];
+      const uint v_off = v_x_idx + 58368u * i;
+      const f16vec4 v0 = buffer_x_qkv[v_off];
+      const f16vec4 v1 = buffer_x_qkv[v_off + 1824u];
+      const f16vec4 v2 = buffer_x_qkv[v_off + 3648u];
+      const f16vec4 v3 = buffer_x_qkv[v_off + 5472u];
       const uint s_base = r_v4 ^ (d_base & 15u) ^ (d_base >> 4u);
       v_lds[d_base][s_base] = f16vec4(v0.x, v1.x, v2.x, v3.x);
       v_lds[d_base + 1u][s_base ^ 1u] = f16vec4(v0.y, v1.y, v2.y, v3.y);
@@ -137,20 +144,35 @@ void main() {
   for (uint i = 0u; i < 4429u; i += 64u) {
     const bool next = i + 64u < 4429u;
     if (next) {
-      if (i + 128u <= 4429u) {
+      if (i + 64u < 4096u) {
         [[unroll]] for (uint j = 0u; j < 4u; ++j) {
           const uint k_off = k_idx + 19456u * j + 77824u;
           k_prefetch[j][0] = buffer_qk[k_off];
           k_prefetch[j][1] = buffer_qk[k_off + 1u];
         }
         [[unroll]] for (uint j = 0u; j < 2u; ++j) {
-          const uint v_off = v_idx + 19456u * j + 38912u;
-          v_prefetch[j][0] = buffer_v[v_off];
-          v_prefetch[j][1] = buffer_v[v_off + 608u];
-          v_prefetch[j][2] = buffer_v[v_off + 1216u];
-          v_prefetch[j][3] = buffer_v[v_off + 1824u];
+          const uint v_off = v_x_idx + 58368u * j + 116736u;
+          v_prefetch[j][0] = buffer_x_qkv[v_off];
+          v_prefetch[j][1] = buffer_x_qkv[v_off + 1824u];
+          v_prefetch[j][2] = buffer_x_qkv[v_off + 3648u];
+          v_prefetch[j][3] = buffer_x_qkv[v_off + 5472u];
+        }
+      } else if (i + 128u <= 4429u) {
+        const uint ctx_v_idx = v_ctx_base + 1824u * (i + 64u - 4096u);
+        [[unroll]] for (uint j = 0u; j < 4u; ++j) {
+          const uint k_off = k_idx + 19456u * j + 77824u;
+          k_prefetch[j][0] = buffer_qk[k_off];
+          k_prefetch[j][1] = buffer_qk[k_off + 1u];
+        }
+        [[unroll]] for (uint j = 0u; j < 2u; ++j) {
+          const uint v_off = ctx_v_idx + 58368u * j;
+          v_prefetch[j][0] = buffer_ctx_qkv[v_off];
+          v_prefetch[j][1] = buffer_ctx_qkv[v_off + 1824u];
+          v_prefetch[j][2] = buffer_ctx_qkv[v_off + 3648u];
+          v_prefetch[j][3] = buffer_ctx_qkv[v_off + 5472u];
         }
       } else {
+        const uint ctx_v_idx = v_ctx_base + 1824u * (i + 64u - 4096u);
         [[unroll]] for (uint j = 0u; j < 4u; ++j) {
           const uint r = (tid >> 3u) + (j << 4u);
           const uint k_off = k_idx + 19456u * j + 77824u;
@@ -161,14 +183,15 @@ void main() {
         [[unroll]] for (uint j = 0u; j < 2u; ++j) {
           const uint r_base = ((j << 3u) + (tid >> 4u)) << 2u;
           const uint g_r0 = i + 64u + r_base;
-          const uint v_off = v_idx + 19456u * j + 38912u;
-          v_prefetch[j][0] = (g_r0 < 4429u) ? buffer_v[v_off] : f16vec4(0.0hf);
-          v_prefetch[j][1] =
-              (g_r0 + 1u < 4429u) ? buffer_v[v_off + 608u] : f16vec4(0.0hf);
-          v_prefetch[j][2] =
-              (g_r0 + 2u < 4429u) ? buffer_v[v_off + 1216u] : f16vec4(0.0hf);
-          v_prefetch[j][3] =
-              (g_r0 + 3u < 4429u) ? buffer_v[v_off + 1824u] : f16vec4(0.0hf);
+          const uint v_off = ctx_v_idx + 58368u * j;
+          v_prefetch[j][0] =
+              (g_r0 < 4429u) ? buffer_ctx_qkv[v_off] : f16vec4(0.0hf);
+          v_prefetch[j][1] = (g_r0 + 1u < 4429u) ? buffer_ctx_qkv[v_off + 1824u]
+                                                 : f16vec4(0.0hf);
+          v_prefetch[j][2] = (g_r0 + 2u < 4429u) ? buffer_ctx_qkv[v_off + 3648u]
+                                                 : f16vec4(0.0hf);
+          v_prefetch[j][3] = (g_r0 + 3u < 4429u) ? buffer_ctx_qkv[v_off + 5472u]
+                                                 : f16vec4(0.0hf);
         }
       }
     }
@@ -291,7 +314,7 @@ void main() {
     if (next) {
       barrier();
       k_idx += 77824u;
-      v_idx += 38912u;
+      v_x_idx += 116736u;
       const uint c = tid & 7u;
       [[unroll]] for (uint j = 0u; j < 4u; ++j) {
         const uint r = (tid >> 3u) + (j << 4u);
