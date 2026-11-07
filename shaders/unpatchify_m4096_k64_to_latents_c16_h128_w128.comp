@@ -1,0 +1,40 @@
+#version 460
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_KHR_shader_subgroup_basic : require
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly restrict buffer In {
+  f16vec4 buffer_in[];
+};
+
+layout(std430, set = 0, binding = 1) writeonly restrict buffer Out {
+  f16vec2 buffer_out[];
+};
+
+shared f16vec4 lds_data[16][17];
+
+void main() {
+  const uint tid = gl_LocalInvocationID.x;
+  const uint wg_id = gl_WorkGroupID.x;
+  const uint global_in_idx = (wg_id << 8u) + tid;
+  const uint in_patch_local = tid >> 4u;
+  const uint in_c = tid & 15u;
+  lds_data[in_patch_local][in_c] = buffer_in[global_in_idx];
+  barrier();
+  const uint out_c = tid >> 4u;
+  const uint out_patch_local = tid & 15u;
+  const f16vec4 val = lds_data[out_patch_local][out_c];
+  const uint wg_patch_base = wg_id << 4u;
+  const uint patch_y = wg_patch_base >> 6u;
+  const uint patch_x_base = wg_patch_base & 63u;
+  const uint patch_x = patch_x_base + out_patch_local;
+  const uint out_v2_0 = (out_c << 13u) + (patch_y << 7u) + patch_x;
+  const uint out_v2_1 = out_v2_0 + 64u;
+  buffer_out[out_v2_0] = val.xy;
+  buffer_out[out_v2_1] = val.zw;
+}
