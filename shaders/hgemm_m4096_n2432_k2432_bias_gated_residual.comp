@@ -10,8 +10,8 @@ const uint TILE_M = 16;
 const uint TILE_N = 16;
 const uint TILE_K = 16;
 
-#define MatA coopmat<float16_t, gl_ScopeSubgroup, TILE_M, TILE_K, gl_MatrixUseA>
-#define MatB coopmat<float16_t, gl_ScopeSubgroup, TILE_K, TILE_N, gl_MatrixUseB>
+#define MatA coopmat<float16_t, gl_ScopeSubgroup, TILE_M, TILE_K, gl_MatrixUseB>
+#define MatB coopmat<float16_t, gl_ScopeSubgroup, TILE_K, TILE_N, gl_MatrixUseA>
 #define MatAcc                                                                 \
   coopmat<float, gl_ScopeSubgroup, TILE_M, TILE_N, gl_MatrixUseAccumulator>
 #define MatOut                                                                 \
@@ -156,7 +156,7 @@ void main() {
         b_frag[14] = b3.z;
         b_frag[15] = b3.w;
         [[unroll]] for (uint e = 0u; e < 2u; ++e)
-          c_frag[e][l] = coopMatMulAdd(a_frag[e], b_frag, c_frag[e][l]);
+          c_frag[e][l] = coopMatMulAdd(b_frag, a_frag[e], c_frag[e][l]);
       }
     }
     if (next) {

@@ -13,8 +13,8 @@ const uint TILE_M = 16;
 const uint TILE_N = 16;
 const uint TILE_K = 16;
 
-#define MatA coopmat<float16_t, gl_ScopeSubgroup, TILE_M, TILE_K, gl_MatrixUseA>
-#define MatB coopmat<float16_t, gl_ScopeSubgroup, TILE_K, TILE_N, gl_MatrixUseB>
+#define MatA coopmat<float16_t, gl_ScopeSubgroup, TILE_M, TILE_K, gl_MatrixUseB>
+#define MatB coopmat<float16_t, gl_ScopeSubgroup, TILE_K, TILE_N, gl_MatrixUseA>
 #define MatAcc                                                                 \
   coopmat<float, gl_ScopeSubgroup, TILE_M, TILE_N, gl_MatrixUseAccumulator>
 
@@ -197,10 +197,11 @@ void main() {
     }
     [[unroll]] for (uint l = 0u; l < 4u; ++l)
       s_frag[l] = MatAcc(0.0);
+    const uint k_lane = ((lane_mod16 & 1u) << 3u) | (lane_mod16 >> 1u);
     [[unroll]] for (uint j = 0u; j < 4u; ++j) {
       const uint c_base = j << 1u;
       [[unroll]] for (uint l = 0u; l < 4u; ++l) {
-        const uint r = (l << 4u) + lane_mod16;
+        const uint r = (l << 4u) + k_lane;
         const uint c0 = (c_base ^ r & 7u) << 1u;
         const uint c1 = (c_base + 1u ^ r & 7u) << 1u;
         const f16vec4 b0 = k_lds[r][c0];
@@ -223,7 +224,7 @@ void main() {
         b_frag[13] = b3.y;
         b_frag[14] = b3.z;
         b_frag[15] = b3.w;
-        s_frag[l] = coopMatMulAdd(q_frag[j], b_frag, s_frag[l]);
+        s_frag[l] = coopMatMulAdd(b_frag, q_frag[j], s_frag[l]);
       }
     }
     if (!next) {
@@ -283,11 +284,12 @@ void main() {
     }
     row_sum =
         fma(row_sum, scale_old, local_sum + subgroupShuffleXor(local_sum, 16u));
+    const uint v_lane = ((lane_mod16 & 1u) << 3u) | (lane_mod16 >> 1u);
     [[unroll]] for (uint j = 0u; j < 4u; ++j) {
       const uint r_v4_base = j << 2u;
       [[unroll]] for (uint l = 0u; l < 4u; ++l) {
-        const uint d = (l << 4u) + lane_mod16;
-        const uint s_base = r_v4_base ^ lane_mod16 ^ l;
+        const uint d = (l << 4u) + v_lane;
+        const uint s_base = r_v4_base ^ v_lane ^ l;
         const f16vec4 b0 = v_lds[d][s_base];
         const f16vec4 b1 = v_lds[d][s_base ^ 1u];
         const f16vec4 b2 = v_lds[d][s_base ^ 2u];
@@ -308,7 +310,7 @@ void main() {
         b_frag[13] = b3.y;
         b_frag[14] = b3.z;
         b_frag[15] = b3.w;
-        o_frag[l] = coopMatMulAdd(p_frag[j], b_frag, o_frag[l]);
+        o_frag[l] = coopMatMulAdd(b_frag, p_frag[j], o_frag[l]);
       }
     }
     if (next) {
