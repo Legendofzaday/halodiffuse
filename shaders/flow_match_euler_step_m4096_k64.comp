@@ -19,4 +19,4 @@ void main() {
   const vec4 v = vec4(buffer_v[idx]);
   const vec4 x = vec4(buffer_x[idx]);
   buffer_x[idx] = f16vec4(fma(v, vec4(pc.dt), x));
-}   
+}
