@@ -27,7 +27,7 @@ void main() {
   const uint row = wgid % 4429u;
   const uint out_row_base = wgid * 608u;
   if (row < 4096u) {
-    const uint in_row_base = (batch_idx * 4096u + row) * 608u;
+    const uint in_row_base = (batch_idx * 4096u + row) * 1824u + 1216u;
     [[unroll]] for (uint i = 0u; i < 2u; ++i) {
       const uint col = (i << 8u) + tid;
       buffer_c[out_row_base + col] = buffer_a[in_row_base + col];
@@ -37,7 +37,7 @@ void main() {
       buffer_c[out_row_base + col] = buffer_a[in_row_base + col];
     }
   } else {
-    const uint in_row_base = (batch_idx * 333u + (row - 4096u)) * 608u;
+    const uint in_row_base = (batch_idx * 333u + (row - 4096u)) * 1824u + 1216u;
     [[unroll]] for (uint i = 0u; i < 2u; ++i) {
       const uint col = (i << 8u) + tid;
       buffer_c[out_row_base + col] = buffer_b[in_row_base + col];

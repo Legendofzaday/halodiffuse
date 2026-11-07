@@ -9,23 +9,31 @@
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
-layout(std430, set = 0, binding = 0) readonly restrict buffer QIn {
-  f16vec4 buffer_q[];
+layout(std430, set = 0, binding = 0) readonly restrict buffer XQKV {
+  f16vec4 buffer_x_qkv[];
 };
 
-layout(std430, set = 0, binding = 1) readonly restrict buffer KIn {
-  f16vec4 buffer_k[];
+layout(std430, set = 0, binding = 1) readonly restrict buffer CtxQKV {
+  f16vec4 buffer_ctx_qkv[];
 };
 
-layout(std430, set = 0, binding = 2) readonly restrict buffer GammaQ {
-  f16vec4 gamma_q[];
+layout(std430, set = 0, binding = 2) readonly restrict buffer GammaXQ {
+  f16vec4 gamma_x_q[];
 };
 
-layout(std430, set = 0, binding = 3) readonly restrict buffer GammaK {
-  f16vec4 gamma_k[];
+layout(std430, set = 0, binding = 3) readonly restrict buffer GammaXK {
+  f16vec4 gamma_x_k[];
 };
 
-layout(std430, set = 0, binding = 4) writeonly restrict buffer QKOut {
+layout(std430, set = 0, binding = 4) readonly restrict buffer GammaCtxQ {
+  f16vec4 gamma_ctx_q[];
+};
+
+layout(std430, set = 0, binding = 5) readonly restrict buffer GammaCtxK {
+  f16vec4 gamma_ctx_k[];
+};
+
+layout(std430, set = 0, binding = 6) writeonly restrict buffer QKOut {
   f16vec4 buffer_qk_out[];
 };
 
@@ -40,40 +48,59 @@ f16vec4 rmsnorm_head_d64(const f16vec4 val_f16, const f16vec4 gamma_f16) {
   sum_sq += subgroupShuffleXor(sum_sq, 4u);
   sum_sq += subgroupShuffleXor(sum_sq, 2u);
   sum_sq += subgroupShuffleXor(sum_sq, 1u);
-  const float rstd = inversesqrt(fma(sum_sq, 0.015625f, 1e-6));
+  const float rstd = inversesqrt(fma(sum_sq, 0.015625f, 1e-6f));
   return f16vec4(d * rstd * g);
 }
 
 void main() {
   const uint tid = gl_LocalInvocationID.x;
   const uint wgid = gl_WorkGroupID.x;
-  const uint in_row_base = wgid * 608u;
+  const uint batch_idx = wgid / 4429u;
+  const uint row = wgid % 4429u;
   const uint out_q_base = wgid * 1216u;
   const uint out_k_base = out_q_base + 608u;
+  const uint head_col = tid & 15u;
   f16vec4 r_q[2];
   f16vec4 r_k[2];
-  f16vec4 r_gq[2];
-  f16vec4 r_gk[2];
-  [[unroll]] for (uint i = 0u; i < 2u; ++i) {
-    const uint col_v4 = (i << 8u) + tid;
-    r_q[i] = buffer_q[in_row_base + col_v4];
-    r_k[i] = buffer_k[in_row_base + col_v4];
-    r_gq[i] = gamma_q[col_v4];
-    r_gk[i] = gamma_k[col_v4];
-  }
+  f16vec4 r_gq;
+  f16vec4 r_gk;
   f16vec4 r_tail_in;
   f16vec4 r_tail_gamma;
-  if (tid < 192u) {
-    const bool is_k = tid >= 96u;
-    const uint tail_col = 512u + (is_k ? (tid - 96u) : tid);
-    r_tail_in = is_k ? buffer_k[in_row_base + tail_col]
-                     : buffer_q[in_row_base + tail_col];
-    r_tail_gamma = is_k ? gamma_k[tail_col] : gamma_q[tail_col];
+  if (row < 4096u) {
+    const uint in_row_base = (batch_idx * 4096u + row) * 1824u;
+    r_gq = gamma_x_q[head_col];
+    r_gk = gamma_x_k[head_col];
+    [[unroll]] for (uint i = 0u; i < 2u; ++i) {
+      const uint col_v4 = (i << 8u) + tid;
+      r_q[i] = buffer_x_qkv[in_row_base + col_v4];
+      r_k[i] = buffer_x_qkv[in_row_base + 608u + col_v4];
+    }
+    if (tid < 192u) {
+      const bool is_k = tid >= 96u;
+      const uint tail_col = 512u + (is_k ? (tid - 96u) : tid);
+      r_tail_in = buffer_x_qkv[in_row_base + (is_k ? 608u : 0u) + tail_col];
+      r_tail_gamma = is_k ? r_gk : r_gq;
+    }
+  } else {
+    const uint in_row_base = (batch_idx * 333u + (row - 4096u)) * 1824u;
+    r_gq = gamma_ctx_q[head_col];
+    r_gk = gamma_ctx_k[head_col];
+    [[unroll]] for (uint i = 0u; i < 2u; ++i) {
+      const uint col_v4 = (i << 8u) + tid;
+      r_q[i] = buffer_ctx_qkv[in_row_base + col_v4];
+      r_k[i] = buffer_ctx_qkv[in_row_base + 608u + col_v4];
+    }
+    if (tid < 192u) {
+      const bool is_k = tid >= 96u;
+      const uint tail_col = 512u + (is_k ? (tid - 96u) : tid);
+      r_tail_in = buffer_ctx_qkv[in_row_base + (is_k ? 608u : 0u) + tail_col];
+      r_tail_gamma = is_k ? r_gk : r_gq;
+    }
   }
   [[unroll]] for (uint i = 0u; i < 2u; ++i) {
     const uint col_v4 = (i << 8u) + tid;
-    buffer_qk_out[out_q_base + col_v4] = rmsnorm_head_d64(r_q[i], r_gq[i]);
-    buffer_qk_out[out_k_base + col_v4] = rmsnorm_head_d64(r_k[i], r_gk[i]);
+    buffer_qk_out[out_q_base + col_v4] = rmsnorm_head_d64(r_q[i], r_gq);
+    buffer_qk_out[out_k_base + col_v4] = rmsnorm_head_d64(r_k[i], r_gk);
   }
   if (tid < 192u) {
     const f16vec4 norm_tail = rmsnorm_head_d64(r_tail_in, r_tail_gamma);
