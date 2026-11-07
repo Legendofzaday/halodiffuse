@@ -8,4 +8,4 @@ repository = "https://github.com/Legendofzaday/halodiffuse"
 readme = "README.md"
 
 [dependencies]
-ash = "*"
+vulkano = "*"
