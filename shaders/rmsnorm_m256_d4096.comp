@@ -1,0 +1,64 @@
+
+#version 460
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly restrict buffer dataV4 {
+  f16vec4 data_v4[];
+};
+
+layout(std430, set = 0, binding = 1) readonly restrict buffer gammaV4 {
+  f16vec4 gamma_v4[];
+};
+
+layout(std430, set = 0, binding = 2) writeonly restrict buffer normV4 {
+  f16vec4 norm_v4[];
+};
+
+shared float wave_sq_sums[8];
+
+const float INV_D = 1.0f / 4096.0f;
+const float EPS = 1e-6f;
+
+void main() {
+  const uint tid = gl_LocalInvocationID.x;
+  const uint wgid = gl_WorkGroupID.x;
+  const uint row_offset = wgid * 1024u;
+  f16vec4 d_v4[4];
+  float thread_sum_sq = 0.0f;
+  [[unroll]]
+  for (uint i = 0u; i < 4u; ++i) {
+    const uint col_idx = i * 256u + tid;
+    d_v4[i] = data_v4[row_offset + col_idx];
+    const vec4 d = vec4(d_v4[i]);
+    thread_sum_sq = fma(d.x, d.x, thread_sum_sq);
+    thread_sum_sq = fma(d.y, d.y, thread_sum_sq);
+    thread_sum_sq = fma(d.z, d.z, thread_sum_sq);
+    thread_sum_sq = fma(d.w, d.w, thread_sum_sq);
+  }
+  const float wave_total = subgroupAdd(thread_sum_sq);
+  if (subgroupElect()) {
+    wave_sq_sums[gl_SubgroupID] = wave_total;
+  }
+  barrier();
+  float block_total = 0.0f;
+  [[unroll]]
+  for (uint i = 0u; i < 8u; ++i) {
+    block_total += wave_sq_sums[i];
+  }
+  const float mean_sq = block_total * INV_D;
+  const float rstd = inversesqrt(mean_sq + EPS);
+  [[unroll]]
+  for (uint i = 0u; i < 4u; ++i) {
+    const uint col_idx = i * 256u + tid;
+    const vec4 g = vec4(gamma_v4[col_idx]);
+    const vec4 d = vec4(d_v4[i]);
+    norm_v4[row_offset + col_idx] = f16vec4(d * rstd * g);
+  }
+}
