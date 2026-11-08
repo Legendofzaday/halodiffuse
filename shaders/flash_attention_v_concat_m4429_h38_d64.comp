@@ -54,9 +54,9 @@ void main() {
   const float16_t q_scale = float16_t(0.18033688hf);
   uint k_idx = 1216u * (seq_base + (tid >> 3u)) + 608u + head_v4_off +
                ((tid & 7u) << 1u);
-  const uint v_row_in_tile = (tid >> 4u) << 2u;
+  const uint v_row_in_tile = (tid >> 2u) & ~3u;
   const uint v_col_off = 1216u + head_v4_off + lane_mod16;
-  uint v_x_idx = 1824u * (batch_idx * 4096u + v_row_in_tile) + v_col_off;
+  uint v_x_idx = 1824u * ((batch_idx << 12u) + v_row_in_tile) + v_col_off;
   const uint v_ctx_base =
       1824u * (batch_idx * 333u + v_row_in_tile) + v_col_off;
   {
@@ -64,7 +64,7 @@ void main() {
     [[unroll]] for (uint i = 0u; i < 4u; ++i) {
       const uint r = (tid >> 3u) + (i << 4u);
       const uint global_r = q_block_row + r;
-      const uint c_swz = (c_pair ^ (r & 7u)) << 1u;
+      const uint c_swz = (c_pair ^ r & 7u) << 1u;
       f16vec4 q0 = f16vec4(0.0hf);
       f16vec4 q1 = f16vec4(0.0hf);
       if (global_r < 4429u) {
@@ -82,8 +82,8 @@ void main() {
   [[unroll]] for (uint j = 0u; j < 4u; ++j) {
     const uint r = (wave_id << 4u) + lane_mod16;
     const uint c_base = j << 1u;
-    const uint c0 = (c_base ^ (r & 7u)) << 1u;
-    const uint c1 = (c_base + 1u ^ (r & 7u)) << 1u;
+    const uint c0 = (c_base ^ r & 7u) << 1u;
+    const uint c1 = (c_base + 1u ^ r & 7u) << 1u;
     const f16vec4 a0 = k_lds[r][c0];
     const f16vec4 a1 = k_lds[r][c0 + 1u];
     const f16vec4 a2 = k_lds[r][c1];

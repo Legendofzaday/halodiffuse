@@ -1,4 +1,3 @@
-
 #version 460
 
 #extension GL_EXT_control_flow_attributes : require
@@ -29,12 +28,12 @@ const float EPS = 1e-6f;
 void main() {
   const uint tid = gl_LocalInvocationID.x;
   const uint wgid = gl_WorkGroupID.x;
-  const uint row_offset = wgid * 1024u;
+  const uint row_offset = wgid << 10u;
   f16vec4 d_v4[4];
   float thread_sum_sq = 0.0f;
   [[unroll]]
   for (uint i = 0u; i < 4u; ++i) {
-    const uint col_idx = i * 256u + tid;
+    const uint col_idx = (i << 8u) + tid;
     d_v4[i] = data_v4[row_offset + col_idx];
     const vec4 d = vec4(d_v4[i]);
     thread_sum_sq = fma(d.x, d.x, thread_sum_sq);
@@ -56,7 +55,7 @@ void main() {
   const float rstd = inversesqrt(mean_sq + EPS);
   [[unroll]]
   for (uint i = 0u; i < 4u; ++i) {
-    const uint col_idx = i * 256u + tid;
+    const uint col_idx = (i << 8u) + tid;
     const vec4 g = vec4(gamma_v4[col_idx]);
     const vec4 d = vec4(d_v4[i]);
     norm_v4[row_offset + col_idx] = f16vec4(d * rstd * g);

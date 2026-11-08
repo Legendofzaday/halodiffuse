@@ -61,7 +61,7 @@ void main() {
         float(buffer_rpb_weight[(tid << 6u) + head_idx]) * 1.44269504f;
   }
   uint k_idx = 3072u * (tid >> 3u) + 1024u + head_v4_off + ((tid & 7u) << 1u);
-  const uint v_row_in_tile = (tid >> 4u) << 2u;
+  const uint v_row_in_tile = (tid >> 2u) & ~3u;
   const uint v_col_off = 2048u + head_v4_off + lane_mod16;
   uint v_idx = 3072u * v_row_in_tile + v_col_off;
   {
@@ -69,7 +69,7 @@ void main() {
     [[unroll]] for (uint i = 0u; i < 4u; ++i) {
       const uint r = (tid >> 3u) + (i << 4u);
       const uint global_r = q_block_row + r;
-      const uint c_swz = (c_pair ^ (r & 7u)) << 1u;
+      const uint c_swz = (c_pair ^ r & 7u) << 1u;
       const uint q_off = 3072u * global_r + head_v4_off + (c_pair << 1u);
       k_lds[r][c_swz] = buffer_qkv[q_off] * q_scale;
       k_lds[r][c_swz + 1u] = buffer_qkv[q_off + 1u] * q_scale;
@@ -80,8 +80,8 @@ void main() {
   [[unroll]] for (uint j = 0u; j < 4u; ++j) {
     const uint r = (wave_id << 4u) + lane_mod16;
     const uint c_base = j << 1u;
-    const uint c0 = (c_base ^ (r & 7u)) << 1u;
-    const uint c1 = ((c_base + 1u) ^ (r & 7u)) << 1u;
+    const uint c0 = (c_base ^ r & 7u) << 1u;
+    const uint c1 = (c_base + 1u ^ r & 7u) << 1u;
     const f16vec4 a0 = k_lds[r][c0];
     const f16vec4 a1 = k_lds[r][c0 + 1u];
     const f16vec4 a2 = k_lds[r][c1];
@@ -164,7 +164,7 @@ void main() {
       [[unroll]] for (uint l = 0u; l < 4u; ++l) {
         const uint r = (l << 4u) + k_lane;
         const uint c0 = (c_base ^ r & 7u) << 1u;
-        const uint c1 = ((c_base + 1u) ^ r & 7u) << 1u;
+        const uint c1 = (c_base + 1u ^ r & 7u) << 1u;
         const f16vec4 b0 = k_lds[r][c0];
         const f16vec4 b1 = k_lds[r][c0 + 1u];
         const f16vec4 b2 = k_lds[r][c1];
@@ -300,7 +300,7 @@ void main() {
   }
   const uint out_r = q_block_row + (wave_id << 4u) + lane_mod16;
   const float inv_sum = 1.0f / row_sum;
-  const uint out_row_base = 1024u * out_r + head_v4_off + (lane_half << 1u);
+  const uint out_row_base = (out_r << 10u) + head_v4_off + (lane_half << 1u);
   [[unroll]] for (uint l = 0u; l < 4u; ++l) {
     const uint col_vec4_idx = out_row_base + (l << 2u);
     const MatAcc acc = o_frag[l];

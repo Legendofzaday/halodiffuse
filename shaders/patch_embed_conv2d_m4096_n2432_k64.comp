@@ -58,14 +58,14 @@ void main() {
   }
   const uint block_row = block_m << 7u;
   const uint block_col = block_n << 7u;
-  uint a_idx = 16u * (block_row + (tid >> 3u)) + ((tid & 7u) << 1u);
+  uint a_idx = ((block_row + (tid >> 3u)) << 4u) + ((tid & 7u) << 1u);
   uint b_idx = 608u * (tid >> 4u) + (block_col >> 2u) + ((tid & 15u) << 1u);
   {
     const uint c_a = tid & 7u;
     [[unroll]] for (uint i = 0u; i < 4u; ++i) {
       const uint r = (tid >> 3u) + (i << 5u);
       const uint c_swz = (c_a ^ r & 7u) << 1u;
-      const uint a_off = a_idx + 512u * i;
+      const uint a_off = a_idx + (i << 9u);
       a_lds[r][c_swz] = buffer_a[a_off];
       a_lds[r][c_swz + 1u] = buffer_a[a_off + 1u];
     }
@@ -82,14 +82,14 @@ void main() {
   MatA a_frag[2];
   MatB b_frag;
   MatAcc c_frag[2][4];
-  [[unroll]] for (uint e = 0u; e < 2u; ++e) {
-    [[unroll]] for (uint l = 0u; l < 4u; ++l) { c_frag[e][l] = MatAcc(0.0); }
-  }
+  [[unroll]] for (uint e = 0u; e < 2u; ++e) [[unroll]]
+    for (uint l = 0u; l < 4u; ++l)
+      c_frag[e][l] = MatAcc(0.0);
   [[unroll]] for (uint j = 0u; j < 4u; ++j) {
     const uint k_offset = j << 4u;
     const uint c_base_a = j << 1u;
     [[unroll]] for (uint e = 0u; e < 2u; ++e) {
-      const uint r = (tid >> 6u << 5u) + (e << 4u) + (tid & 15u);
+      const uint r = ((tid >> 1u) & ~31u) + (e << 4u) + (tid & 15u);
       const uint c0 = (c_base_a ^ r & 7u) << 1u;
       const uint c1 = (c_base_a + 1u ^ r & 7u) << 1u;
       const f16vec4 a0 = a_lds[r][c0];
@@ -115,7 +115,7 @@ void main() {
     }
     [[unroll]] for (uint l = 0u; l < 4u; ++l) {
       const uint r = k_offset + (tid & 15u);
-      const uint c = (((tid >> 5u) & 1u) << 3u) + (l << 1u);
+      const uint c = ((tid >> 2u) & 8u) + (l << 1u);
       const uint c0 = (c ^ r & 15u) << 1u;
       const uint c1 = (c + 1u ^ r & 15u) << 1u;
       const f16vec4 b0 = b_lds[r][c0];
@@ -138,14 +138,12 @@ void main() {
       b_frag[13] = b3.y;
       b_frag[14] = b3.z;
       b_frag[15] = b3.w;
-      [[unroll]] for (uint e = 0u; e < 2u; ++e) {
+      [[unroll]] for (uint e = 0u; e < 2u; ++e)
         c_frag[e][l] = coopMatMulAdd(b_frag, a_frag[e], c_frag[e][l]);
-      }
     }
   }
-  const uint c_r_base = block_row + (tid >> 6u << 5u) + (tid & 15u);
-  const uint c_c_base =
-      block_col + (((tid >> 5u) & 1u) << 6u) + (((tid & 31u) >> 4u) << 3u);
+  const uint c_r_base = block_row + ((tid >> 1u) & ~31u) + (tid & 15u);
+  const uint c_c_base = block_col + ((tid << 1u) & 64u) + ((tid >> 1u) & 8u);
   [[unroll]] for (uint l = 0u; l < 4u; ++l) {
     const uint col_vec4_idx = (c_c_base + (l << 4u)) >> 2u;
     [[unroll]] for (uint e = 0u; e < 2u; ++e) {

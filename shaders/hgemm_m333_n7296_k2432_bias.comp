@@ -184,8 +184,7 @@ void main() {
     }
   }
   const uint c_r_base = block_row + (tid & 15u);
-  const uint c_c_base =
-      block_col + ((tid >> 5u) << 4u) + (((tid & 31u) >> 4u) << 3u);
+  const uint c_c_base = block_col + ((tid >> 1u) & ~7u);
   const uint col_vec4_idx = c_c_base >> 2u;
   const f16vec4 bias0 = buffer_bias[col_vec4_idx];
   const f16vec4 bias1 = buffer_bias[col_vec4_idx + 1u];

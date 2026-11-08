@@ -25,8 +25,8 @@ void main() {
   const uint token_idx = gl_WorkGroupID.x;
   const uint token_id = buffer_token_ids[token_idx];
   const uint safe_token_id = min(token_id, 32127u);
-  const uint weight_base = safe_token_id * 1024u;
-  const uint out_base = token_idx * 1024u;
+  const uint weight_base = safe_token_id << 10u;
+  const uint out_base = token_idx << 10u;
   [[unroll]] for (uint i = 0u; i < 4u; ++i) {
     const uint offset = (i << 8u) + tid;
     buffer_out[out_base + offset] = buffer_embed_weights[weight_base + offset];

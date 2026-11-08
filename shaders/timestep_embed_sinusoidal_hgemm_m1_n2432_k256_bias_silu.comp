@@ -33,8 +33,8 @@ void main() {
   if (tid < 32u) {
     const float t = buffer_t[0];
     const vec4 j = vec4(tid << 2u) + vec4(0.0f, 1.0f, 2.0f, 3.0f);
-    const vec4 exponent = j * -0.071955784156f;
-    const vec4 emb = exp(exponent) * t;
+    const vec4 exponent = j * -0.10381025296f;
+    const vec4 emb = exp2(exponent) * t;
     c_lds[tid] = f16vec4(cos(emb));
     c_lds[tid + 32u] = f16vec4(sin(emb));
   }

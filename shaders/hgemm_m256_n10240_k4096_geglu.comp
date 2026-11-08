@@ -37,8 +37,8 @@ shared f16vec4 a_lds[128][32];
 shared f16vec4 b_lds[128][32];
 
 vec4 gelu_new(const vec4 x) {
-  const vec4 c = 0.7978845608f * fma(0.044715f * x, x * x, x);
-  return 0.5f * x * (1.0f + tanh(c));
+  const vec4 c = -2.30198566f * fma(0.044715f * x, x * x, x);
+  return x / (1.0f + exp2(c));
 }
 
 void main() {
@@ -52,7 +52,7 @@ void main() {
     s_n = 79u - s_n;
   }
   const uint local_m = s_inner >> 1u;
-  const uint local_n = local_m ^ (s_inner & 1u);
+  const uint local_n = local_m ^ s_inner & 1u;
   const uint block_m = (s_m << 1u) + local_m;
   const uint block_n = (s_n << 1u) + local_n;
   const uint block_row = block_m << 7u;
@@ -60,19 +60,19 @@ void main() {
   const uint c = tid & 15u;
   const bool is_b1 = (c >= 8u);
   const uint b_col_pair = c & 7u;
-  uint a_idx = 1024u * (block_row + (tid >> 4u)) + (c << 1u);
+  uint a_idx = ((block_row + (tid >> 4u)) << 10u) + (c << 1u);
   uint b_idx = 2560u * (tid >> 4u) + (block_col >> 2u) + (b_col_pair << 1u);
   {
     [[unroll]] for (uint i = 0u; i < 8u; ++i) {
       const uint r = (tid >> 4u) + (i << 4u);
-      const uint c_swz = (c ^ (r & 15u)) << 1u;
-      const uint a_off = a_idx + 16384u * i;
+      const uint c_swz = (c ^ r & 15u) << 1u;
+      const uint a_off = a_idx + (i << 14u);
       a_lds[r][c_swz] = buffer_a[a_off];
       a_lds[r][c_swz + 1u] = buffer_a[a_off + 1u];
     }
     [[unroll]] for (uint i = 0u; i < 8u; ++i) {
       const uint r = (tid >> 4u) + (i << 4u);
-      const uint c_swz = (c ^ (r & 15u)) << 1u;
+      const uint c_swz = (c ^ r & 15u) << 1u;
       const uint b_off = b_idx + 40960u * i;
       b_lds[r][c_swz] = is_b1 ? buffer_b1[b_off] : buffer_b0[b_off];
       b_lds[r][c_swz + 1u] =
@@ -92,7 +92,7 @@ void main() {
     const bool next = i + 128u < 4096u;
     if (next) {
       [[unroll]] for (uint j = 0u; j < 8u; ++j) {
-        const uint a_off = a_idx + 16384u * j + 32u;
+        const uint a_off = a_idx + (j << 14u) + 32u;
         a_prefetch[j][0] = buffer_a[a_off];
         a_prefetch[j][1] = buffer_a[a_off + 1u];
       }
@@ -107,9 +107,9 @@ void main() {
       const uint k_offset = j << 4u;
       const uint c_base = j << 1u;
       [[unroll]] for (uint e = 0u; e < 2u; ++e) {
-        const uint r = (tid >> 6u << 5u) + (e << 4u) + (tid & 15u);
-        const uint c0 = (c_base ^ (r & 15u)) << 1u;
-        const uint c1 = ((c_base + 1u) ^ (r & 15u)) << 1u;
+        const uint r = ((tid >> 1u) & ~31u) + (e << 4u) + (tid & 15u);
+        const uint c0 = (c_base ^ r & 15u) << 1u;
+        const uint c1 = (c_base + 1u ^ r & 15u) << 1u;
         const f16vec4 a0 = a_lds[r][c0];
         const f16vec4 a1 = a_lds[r][c0 + 1u];
         const f16vec4 a2 = a_lds[r][c1];
@@ -134,9 +134,9 @@ void main() {
       [[unroll]] for (uint l = 0u; l < 4u; ++l) {
         const uint r = k_offset + (tid & 15u);
         const uint c_b =
-            ((l & 2u) << 2u) + (((tid >> 5u) & 1u) << 2u) + ((l & 1u) << 1u);
-        const uint c0 = (c_b ^ (r & 15u)) << 1u;
-        const uint c1 = ((c_b + 1u) ^ (r & 15u)) << 1u;
+            ((l & 2u) << 2u) + ((tid >> 3u) & 4u) + ((l & 1u) << 1u);
+        const uint c0 = (c_b ^ r & 15u) << 1u;
+        const uint c1 = (c_b + 1u ^ r & 15u) << 1u;
         const f16vec4 b0 = b_lds[r][c0];
         const f16vec4 b1 = b_lds[r][c0 + 1u];
         const f16vec4 b2 = b_lds[r][c1];
@@ -167,22 +167,21 @@ void main() {
       b_idx += 327680u;
       [[unroll]] for (uint j = 0u; j < 8u; ++j) {
         const uint r = (tid >> 4u) + (j << 4u);
-        const uint c_swz = (c ^ (r & 15u)) << 1u;
+        const uint c_swz = (c ^ r & 15u) << 1u;
         a_lds[r][c_swz] = a_prefetch[j][0];
         a_lds[r][c_swz + 1u] = a_prefetch[j][1];
       }
       [[unroll]] for (uint j = 0u; j < 8u; ++j) {
         const uint r = (tid >> 4u) + (j << 4u);
-        const uint c_swz = (c ^ (r & 15u)) << 1u;
+        const uint c_swz = (c ^ r & 15u) << 1u;
         b_lds[r][c_swz] = b_prefetch[j][0];
         b_lds[r][c_swz + 1u] = b_prefetch[j][1];
       }
       barrier();
     }
   }
-  const uint c_r_base = block_row + (tid >> 6u << 5u) + (tid & 15u);
-  const uint c_c_base =
-      block_col + (((tid >> 5u) & 1u) << 5u) + (((tid & 31u) >> 4u) << 3u);
+  const uint c_r_base = block_row + ((tid >> 1u) & ~31u) + (tid & 15u);
+  const uint c_c_base = block_col + (tid & 32u) + ((tid >> 1u) & 8u);
   [[unroll]] for (uint l = 0u; l < 2u; ++l) {
     const uint col_vec4_idx = (c_c_base + (l << 4u)) >> 2u;
     [[unroll]] for (uint e = 0u; e < 2u; ++e) {

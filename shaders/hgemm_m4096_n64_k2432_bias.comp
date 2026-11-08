@@ -41,11 +41,9 @@ shared f16vec4 b_lds[128][16];
 void main() {
   const uint tid = gl_LocalInvocationID.x;
   const uint block_m = gl_WorkGroupID.x + gl_WorkGroupID.y;
-  const uint block_n = 0u;
   const uint block_row = block_m << 7u;
-  const uint block_col = block_n << 6u;
   uint a_idx = 608u * (block_row + (tid >> 4u)) + ((tid & 15u) << 1u);
-  uint b_idx = 16u * (tid >> 3u) + ((tid & 7u) << 1u);
+  uint b_idx = ((tid >> 3u) << 4u) + ((tid & 7u) << 1u);
   {
     const uint c_a = tid & 15u;
     [[unroll]] for (uint i = 0u; i < 8u; ++i) {
@@ -59,7 +57,7 @@ void main() {
     [[unroll]] for (uint i = 0u; i < 4u; ++i) {
       const uint r = (tid >> 3u) + (i << 5u);
       const uint c_swz = (c_b ^ r & 7u) << 1u;
-      const uint b_off = b_idx + 512u * i;
+      const uint b_off = b_idx + (i << 9u);
       b_lds[r][c_swz] = buffer_b[b_off];
       b_lds[r][c_swz + 1u] = buffer_b[b_off + 1u];
     }
@@ -70,7 +68,8 @@ void main() {
   MatA a_frag;
   MatB b_frag;
   MatAcc c_frag[4];
-  [[unroll]] for (uint l = 0u; l < 4u; ++l) { c_frag[l] = MatAcc(0.0); }
+  [[unroll]] for (uint l = 0u; l < 4u; ++l)
+    c_frag[l] = MatAcc(0.0);
   for (uint i = 0u; i < 2432u; i += 128u) {
     const bool next = i + 128u < 2432u;
     if (next) {
@@ -80,7 +79,7 @@ void main() {
         a_prefetch[j][1] = buffer_a[a_off + 1u];
       }
       [[unroll]] for (uint j = 0u; j < 4u; ++j) {
-        const uint b_off = b_idx + 512u * j + 2048u;
+        const uint b_off = b_idx + (j << 9u) + 2048u;
         b_prefetch[j][0] = buffer_b[b_off];
         b_prefetch[j][1] = buffer_b[b_off + 1u];
       }
@@ -88,7 +87,7 @@ void main() {
     [[unroll]] for (uint j = 0u; j < 8u; ++j) {
       const uint k_offset = j << 4u;
       const uint c_base_a = j << 1u;
-      const uint r_a = (tid >> 5u << 4u) + (tid & 15u);
+      const uint r_a = ((tid >> 1u) & ~15u) + (tid & 15u);
       const uint c0_a = (c_base_a ^ r_a & 15u) << 1u;
       const uint c1_a = (c_base_a + 1u ^ r_a & 15u) << 1u;
       const f16vec4 a0 = a_lds[r_a][c0_a];
@@ -160,14 +159,14 @@ void main() {
       barrier();
     }
   }
-  const uint c_r_base = block_row + (tid >> 5u << 4u) + (tid & 15u);
-  const uint c_c_base = block_col + (((tid & 31u) >> 4u) << 3u);
+  const uint c_r_base = block_row + ((tid >> 1u) & ~15u) + (tid & 15u);
+  const uint c_c_base = (tid >> 1u) & 8u;
   [[unroll]] for (uint l = 0u; l < 4u; ++l) {
     const uint col_vec4_idx = (c_c_base + (l << 4u)) >> 2u;
     const f16vec4 bias0 = buffer_bias[col_vec4_idx];
     const f16vec4 bias1 = buffer_bias[col_vec4_idx + 1u];
     if (c_r_base < 4096u) {
-      const uint c_row_offset = c_r_base * 16u;
+      const uint c_row_offset = c_r_base << 4u;
       const MatOut d = MatOut(c_frag[l]);
       buffer_c[c_row_offset + col_vec4_idx] =
           f16vec4(d[0], d[1], d[2], d[3]) + bias0;

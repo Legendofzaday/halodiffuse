@@ -67,7 +67,7 @@ void main() {
   f16vec4 r_tail_in;
   f16vec4 r_tail_gamma;
   if (row < 4096u) {
-    const uint in_row_base = (batch_idx * 4096u + row) * 1824u;
+    const uint in_row_base = ((batch_idx << 12u) + row) * 1824u;
     r_gq = gamma_x_q[head_col];
     r_gk = gamma_x_k[head_col];
     [[unroll]] for (uint i = 0u; i < 2u; ++i) {

@@ -100,7 +100,7 @@ void main() {
       const uint k_offset = j << 4u;
       const uint c_base = j << 1u;
       [[unroll]] for (uint e = 0u; e < 2u; ++e) {
-        const uint r = (tid >> 6u << 5u) + (e << 4u) + (tid & 15u);
+        const uint r = ((tid >> 1u) & ~31u) + (e << 4u) + (tid & 15u);
         const uint c0 = (c_base ^ r & 15u) << 1u;
         const uint c1 = (c_base + 1u ^ r & 15u) << 1u;
         const f16vec4 a0 = a_lds[r][c0];
@@ -126,7 +126,7 @@ void main() {
       }
       [[unroll]] for (uint l = 0u; l < 4u; ++l) {
         const uint r = k_offset + (tid & 15u);
-        const uint c = (((tid >> 5u) & 1u) << 3u) + (l << 1u);
+        const uint c = ((tid >> 2u) & 8u) + (l << 1u);
         const uint c0 = (c ^ r & 15u) << 1u;
         const uint c1 = (c + 1u ^ r & 15u) << 1u;
         const f16vec4 b0 = b_lds[r][c0];
@@ -173,9 +173,8 @@ void main() {
       barrier();
     }
   }
-  const uint c_r_base = block_row + (tid >> 6u << 5u) + (tid & 15u);
-  const uint c_c_base =
-      block_col + (((tid >> 5u) & 1u) << 6u) + (((tid & 31u) >> 4u) << 3u);
+  const uint c_r_base = block_row + ((tid >> 1u) & ~31u) + (tid & 15u);
+  const uint c_c_base = block_col + ((tid << 1u) & 64u) + ((tid >> 1u) & 8u);
   const f16vec4 exp_coef = f16vec4(-2.455078125hf);
   const f16vec4 one = f16vec4(1.0hf);
   [[unroll]] for (uint l = 0u; l < 4u; ++l) {
