@@ -53,7 +53,7 @@ void main() {
   MatA q_frag[8];
   [[unroll]] for (uint j = 0u; j < 8u; ++j) {
     const uint r = lane_mod16;
-    const uint c_base = (wave_id << 5u) + (j << 1u);
+    const uint c_base = (wave_id << 4u) + (j << 1u);
     const uint c0 = (c_base ^ (r & 7u)) << 1u;
     const uint c1 = ((c_base + 1u) ^ (r & 7u)) << 1u;
     const f16vec4 a0 = q_lds[r][c0];
@@ -96,7 +96,7 @@ void main() {
     const uint k_lane = ((lane_mod16 & 1u) << 3u) | (lane_mod16 >> 1u);
     MatB b_frag;
     [[unroll]] for (uint j = 0u; j < 8u; ++j) {
-      const uint c_base = (wave_id << 5u) + (j << 1u);
+      const uint c_base = (wave_id << 4u) + (j << 1u);
       const uint c0 = (c_base ^ k_lane & 7u) << 1u;
       const uint c1 = (c_base + 1u ^ k_lane & 7u) << 1u;
       const f16vec4 b0 = kv_lds[k_lane][c0];
