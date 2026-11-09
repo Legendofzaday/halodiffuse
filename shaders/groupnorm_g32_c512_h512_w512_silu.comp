@@ -72,8 +72,8 @@ void main() {
     g_v[v] = vec4(buffer_gamma[group_v4_off + v]);
     b_v[v] = vec4(buffer_beta[group_v4_off + v]);
   }
-  const f16vec4 log2e = f16vec4(-1.44269504hf);
-  const f16vec4 one = f16vec4(1.0hf);
+  const vec4 log2e = vec4(-1.44269504f);
+  const vec4 one = vec4(1.0f);
   for (uint i = 0u; i < 1024u; ++i) {
     const uint pixel = (i << 8u) + tid;
     const uint base_idx = (pixel << 7u) + group_v4_off;
@@ -81,9 +81,9 @@ void main() {
       const uint idx = base_idx + v;
       const vec4 d = vec4(buffer_in[idx]);
       const vec4 x_n = fma(d, vec4(rstd), vec4(neg_mean_rstd));
-      const f16vec4 y = f16vec4(fma(x_n, g_v[v], b_v[v]));
-      const f16vec4 sig = one / (exp2(y * log2e) + one);
-      buffer_out[idx] = y * sig;
+      const vec4 y = fma(x_n, g_v[v], b_v[v]);
+      const vec4 sig = one / (exp2(y * log2e) + one);
+      buffer_out[idx] = f16vec4(y * sig);
     }
   }
 }

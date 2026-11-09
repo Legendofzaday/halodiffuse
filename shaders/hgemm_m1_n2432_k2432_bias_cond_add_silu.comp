@@ -71,10 +71,10 @@ void main() {
     const uint out_col_idx = wg_col_base + col_id;
     const vec4 b = vec4(buffer_bias[out_col_idx]);
     const vec4 c = vec4(buffer_cond[out_col_idx]);
-    const f16vec4 h0 = f16vec4(block_sum + b + c);
-    const f16vec4 log2e = f16vec4(-1.44269504hf);
-    const f16vec4 one = f16vec4(1.0hf);
-    const f16vec4 r0 = one / (exp2(h0 * log2e) + one);
-    buffer_c[out_col_idx] = h0 * r0;
+    const vec4 h0 = block_sum + b + c;
+    const vec4 log2e = vec4(-1.44269504f);
+    const vec4 one = vec4(1.0f);
+    const vec4 r0 = one / (exp2(h0 * log2e) + one);
+    buffer_c[out_col_idx] = f16vec4(h0 * r0);
   }
 }

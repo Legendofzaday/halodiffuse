@@ -14,8 +14,6 @@ const uint TILE_K = 16;
 #define MatB coopmat<float16_t, gl_ScopeSubgroup, TILE_K, TILE_N, gl_MatrixUseA>
 #define MatAcc                                                                 \
   coopmat<float, gl_ScopeSubgroup, TILE_M, TILE_N, gl_MatrixUseAccumulator>
-#define MatOut                                                                 \
-  coopmat<float16_t, gl_ScopeSubgroup, TILE_M, TILE_N, gl_MatrixUseAccumulator>
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
@@ -169,21 +167,21 @@ void main() {
   const uint c_r_base = block_row + (tid & 15u);
   const uint c_c_base = block_col + ((tid >> 1u) & ~7u);
   const uint col_vec4_idx = c_c_base >> 2u;
-  const f16vec4 bias0 = buffer_bias[col_vec4_idx];
-  const f16vec4 bias1 = buffer_bias[col_vec4_idx + 1u];
-  const f16vec4 exp_coef = f16vec4(-2.455078125hf);
-  const f16vec4 one = f16vec4(1.0hf);
+  const vec4 bias0 = vec4(buffer_bias[col_vec4_idx]);
+  const vec4 bias1 = vec4(buffer_bias[col_vec4_idx + 1u]);
+  const vec4 exp_coef = vec4(-2.455078125f);
+  const vec4 one = vec4(1.0f);
   [[unroll]] for (uint e = 0u; e < 2u; ++e) {
     const uint row_idx = c_r_base + (e << 4u);
     if (row_idx < 77u) {
       const uint c_row_offset = row_idx * 768u;
-      const MatOut d = MatOut(c_frag[e]);
-      const f16vec4 h0 = f16vec4(d[0], d[1], d[2], d[3]) + bias0;
-      const f16vec4 h1 = f16vec4(d[4], d[5], d[6], d[7]) + bias1;
-      const f16vec4 r0 = one / (exp2(h0 * exp_coef) + one);
-      const f16vec4 r1 = one / (exp2(h1 * exp_coef) + one);
-      buffer_c[c_row_offset + col_vec4_idx] = h0 * r0;
-      buffer_c[c_row_offset + col_vec4_idx + 1u] = h1 * r1;
+      const MatAcc d = c_frag[e];
+      const vec4 h0 = vec4(d[0], d[1], d[2], d[3]) + bias0;
+      const vec4 h1 = vec4(d[4], d[5], d[6], d[7]) + bias1;
+      const vec4 r0 = one / (exp2(h0 * exp_coef) + one);
+      const vec4 r1 = one / (exp2(h1 * exp_coef) + one);
+      buffer_c[c_row_offset + col_vec4_idx] = f16vec4(h0 * r0);
+      buffer_c[c_row_offset + col_vec4_idx + 1u] = f16vec4(h1 * r1);
     }
   }
 }
