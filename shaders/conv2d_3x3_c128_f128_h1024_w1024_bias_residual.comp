@@ -1,0 +1,154 @@
+#version 460
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+
+const uint TILE_M = 16;
+const uint TILE_N = 16;
+const uint TILE_K = 16;
+
+#define MatA coopmat<float16_t, gl_ScopeSubgroup, TILE_M, TILE_K, gl_MatrixUseB>
+#define MatB coopmat<float16_t, gl_ScopeSubgroup, TILE_K, TILE_N, gl_MatrixUseA>
+#define MatAcc                                                                 \
+  coopmat<float, gl_ScopeSubgroup, TILE_M, TILE_N, gl_MatrixUseAccumulator>
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly restrict buffer A {
+  f16vec4 buffer_a[];
+};
+
+layout(std430, set = 0, binding = 1) readonly restrict buffer B {
+  f16vec4 buffer_b[];
+};
+
+layout(std430, set = 0, binding = 2) readonly restrict buffer bias {
+  f16vec4 buffer_bias[];
+};
+
+layout(std430, set = 0, binding = 3) restrict buffer C { f16vec4 buffer_c[]; };
+
+shared f16vec4 a_lds[128][32];
+shared f16vec4 b_lds[128][32];
+
+void main() {
+  const uint tid = gl_LocalInvocationID.x;
+  const uint block_m = gl_WorkGroupID.x;
+  const uint block_row = block_m << 7u;
+  MatA a_frag[2];
+  MatB b_frag;
+  MatAcc c_frag[2][4];
+  [[unroll]] for (uint e = 0u; e < 2u; ++e) [[unroll]]
+    for (uint l = 0u; l < 4u; ++l)
+      c_frag[e][l] = MatAcc(0.0);
+  for (uint dy = 0u; dy < 3u; ++dy) {
+    for (uint dx = 0u; dx < 3u; ++dx) {
+      const uint c_a = tid & 15u;
+      [[unroll]] for (uint i = 0u; i < 8u; ++i) {
+        const uint r = (tid >> 4u) + (i << 4u);
+        const uint c_swz = (c_a ^ r & 15u) << 1u;
+        const uint pixel_idx = block_row + r;
+        const uint out_y = pixel_idx >> 10u;
+        const uint out_x = pixel_idx & 1023u;
+        const int in_y = int(out_y) + int(dy) - 1;
+        const int in_x = int(out_x) + int(dx) - 1;
+        const bool valid = (uint(in_y) < 1024u) && (uint(in_x) < 1024u);
+        const uint safe_y = valid ? uint(in_y) : 0u;
+        const uint safe_x = valid ? uint(in_x) : 0u;
+        const uint a_off = ((safe_y << 10u | safe_x) << 5u) + (c_a << 1u);
+        a_lds[r][c_swz] = valid ? buffer_a[a_off] : f16vec4(0.0hf);
+        a_lds[r][c_swz + 1u] = valid ? buffer_a[a_off + 1u] : f16vec4(0.0hf);
+      }
+      const uint c_b = tid & 15u;
+      [[unroll]] for (uint i = 0u; i < 8u; ++i) {
+        const uint r = (tid >> 4u) + (i << 4u);
+        const uint c_swz = (c_b ^ r & 15u) << 1u;
+        const uint b_off = ((dy * 3u + dx) << 12u) + (r << 5u) + (c_b << 1u);
+        b_lds[r][c_swz] = buffer_b[b_off];
+        b_lds[r][c_swz + 1u] = buffer_b[b_off + 1u];
+      }
+      barrier();
+      [[unroll]] for (uint j = 0u; j < 8u; ++j) {
+        const uint k_offset = j << 4u;
+        const uint c_base_a = j << 1u;
+        [[unroll]] for (uint e = 0u; e < 2u; ++e) {
+          const uint r = ((tid >> 1u) & ~31u) + (e << 4u) + (tid & 15u);
+          const uint c0 = (c_base_a ^ r & 15u) << 1u;
+          const uint c1 = (c_base_a + 1u ^ r & 15u) << 1u;
+          const f16vec4 a0 = a_lds[r][c0];
+          const f16vec4 a1 = a_lds[r][c0 + 1u];
+          const f16vec4 a2 = a_lds[r][c1];
+          const f16vec4 a3 = a_lds[r][c1 + 1u];
+          a_frag[e][0] = a0.x;
+          a_frag[e][1] = a0.y;
+          a_frag[e][2] = a0.z;
+          a_frag[e][3] = a0.w;
+          a_frag[e][4] = a1.x;
+          a_frag[e][5] = a1.y;
+          a_frag[e][6] = a1.z;
+          a_frag[e][7] = a1.w;
+          a_frag[e][8] = a2.x;
+          a_frag[e][9] = a2.y;
+          a_frag[e][10] = a2.z;
+          a_frag[e][11] = a2.w;
+          a_frag[e][12] = a3.x;
+          a_frag[e][13] = a3.y;
+          a_frag[e][14] = a3.z;
+          a_frag[e][15] = a3.w;
+        }
+        [[unroll]] for (uint l = 0u; l < 4u; ++l) {
+          const uint r = k_offset + (tid & 15u);
+          const uint c = ((tid >> 2u) & 8u) + (l << 1u);
+          const uint c0 = (c ^ r & 15u) << 1u;
+          const uint c1 = (c + 1u ^ r & 15u) << 1u;
+          const f16vec4 b0 = b_lds[r][c0];
+          const f16vec4 b1 = b_lds[r][c0 + 1u];
+          const f16vec4 b2 = b_lds[r][c1];
+          const f16vec4 b3 = b_lds[r][c1 + 1u];
+          b_frag[0] = b0.x;
+          b_frag[1] = b0.y;
+          b_frag[2] = b0.z;
+          b_frag[3] = b0.w;
+          b_frag[4] = b1.x;
+          b_frag[5] = b1.y;
+          b_frag[6] = b1.z;
+          b_frag[7] = b1.w;
+          b_frag[8] = b2.x;
+          b_frag[9] = b2.y;
+          b_frag[10] = b2.z;
+          b_frag[11] = b2.w;
+          b_frag[12] = b3.x;
+          b_frag[13] = b3.y;
+          b_frag[14] = b3.z;
+          b_frag[15] = b3.w;
+          [[unroll]] for (uint e = 0u; e < 2u; ++e)
+            c_frag[e][l] = coopMatMulAdd(b_frag, a_frag[e], c_frag[e][l]);
+        }
+      }
+      barrier();
+    }
+  }
+  const uint c_r_base = block_row + ((tid >> 1u) & ~31u) + (tid & 15u);
+  const uint c_c_base = ((tid << 1u) & 64u) + ((tid >> 1u) & 8u);
+  [[unroll]] for (uint l = 0u; l < 4u; ++l) {
+    const uint col_vec4_idx = (c_c_base + (l << 4u)) >> 2u;
+    const vec4 bias0 = vec4(buffer_bias[col_vec4_idx]);
+    const vec4 bias1 = vec4(buffer_bias[col_vec4_idx + 1u]);
+    [[unroll]] for (uint e = 0u; e < 2u; ++e) {
+      const uint row_idx = c_r_base + (e << 4u);
+      if (row_idx < 1048576u) {
+        const uint c_idx = (row_idx << 5u) + col_vec4_idx;
+        const MatAcc acc = c_frag[e][l];
+        const vec4 d0 = vec4(acc[0], acc[1], acc[2], acc[3]);
+        const vec4 d1 = vec4(acc[4], acc[5], acc[6], acc[7]);
+        const vec4 res0 = vec4(buffer_c[c_idx]);
+        const vec4 res1 = vec4(buffer_c[c_idx + 1u]);
+        buffer_c[c_idx] = f16vec4(d0 + bias0 + res0);
+        buffer_c[c_idx + 1u] = f16vec4(d1 + bias1 + res1);
+      }
+    }
+  }
+}

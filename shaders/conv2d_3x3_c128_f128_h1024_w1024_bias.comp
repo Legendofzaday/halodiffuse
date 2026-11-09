@@ -1,0 +1,172 @@
+#version 460
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+
+const uint TILE_M = 16;
+const uint TILE_N = 16;
+const uint TILE_K = 16;
+
+#define MatA coopmat<float16_t, gl_ScopeSubgroup, TILE_M, TILE_K, gl_MatrixUseB>
+#define MatB coopmat<float16_t, gl_ScopeSubgroup, TILE_K, TILE_N, gl_MatrixUseA>
+#define MatAcc                                                                 \
+  coopmat<float, gl_ScopeSubgroup, TILE_M, TILE_N, gl_MatrixUseAccumulator>
+#define MatOut                                                                 \
+  coopmat<float16_t, gl_ScopeSubgroup, TILE_M, TILE_N, gl_MatrixUseAccumulator>
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly restrict buffer In {
+  f16vec4 buffer_in[];
+};
+
+layout(std430, set = 0, binding = 1) readonly restrict buffer W {
+  f16vec4 buffer_w[];
+};
+
+layout(std430, set = 0, binding = 2) readonly restrict buffer Bias {
+  f16vec4 buffer_bias[];
+};
+
+layout(std430, set = 0, binding = 3) writeonly restrict buffer Out {
+  f16vec4 buffer_out[];
+};
+
+shared f16vec4 a_halo[128][32];
+shared f16vec4 b_lds[16][32];
+
+void main() {
+  const uint tid = gl_LocalInvocationID.x;
+  const uint block_base_x = gl_WorkGroupID.x << 3u;
+  const uint block_base_y = gl_WorkGroupID.y << 3u;
+  for (uint i = tid; i < 3200u; i += 256u) {
+    uint r_halo = i >> 5u;
+    uint c_vec4 = i & 31u;
+    uint py = r_halo / 10u;
+    uint px = r_halo % 10u;
+    int global_y = int(block_base_y) - 1 + int(py);
+    int global_x = int(block_base_x) - 1 + int(px);
+    f16vec4 val = f16vec4(0.0hf);
+    if (global_y >= 0 && global_y < 1024 && global_x >= 0 && global_x < 1024) {
+      const uint in_idx = ((uint(global_y) << 10u) + uint(global_x) << 5u) + c_vec4;
+      val = buffer_in[in_idx];
+    }
+    const uint c_pair = c_vec4 >> 1u;
+    const uint c_odd = c_vec4 & 1u;
+    const uint c_swz = (c_pair ^ r_halo & 15u) << 1u | c_odd;
+    a_halo[r_halo][c_swz] = val;
+  }
+  barrier();
+  const uint wave_id = tid >> 5u;
+  const uint wave_m = wave_id >> 2u;
+  const uint wave_n = wave_id & 3u;
+  MatAcc c_frag[2][2];
+  [[unroll]] for (uint e = 0u; e < 2u; ++e) [[unroll]]
+    for (uint l = 0u; l < 2u; ++l)
+      c_frag[e][l] = MatAcc(0.0);
+  MatA a_frag[2];
+  MatB b_frag;
+  for (uint ky = 0u; ky < 3u; ++ky) {
+    for (uint kx = 0u; kx < 3u; ++kx) {
+      for (uint k_chunk = 0u; k_chunk < 8u; ++k_chunk) {
+        [[unroll]] for (uint i = 0u; i < 2u; ++i) {
+          const uint load_idx = (i << 8u) + tid;
+          const uint b_k = load_idx >> 5u;
+          const uint b_n_vec4 = load_idx & 31u;
+          const uint global_k = (k_chunk << 4u) + b_k;
+          const uint w_idx = (((ky * 3u + kx) << 7u) + global_k << 5u) + b_n_vec4;
+          const uint b_pair = b_n_vec4 >> 1u;
+          const uint b_odd = b_n_vec4 & 1u;
+          const uint b_swz = (b_pair ^ b_k & 15u) << 1u | b_odd;
+          b_lds[b_k][b_swz] = buffer_w[w_idx];
+        }
+        barrier();
+        [[unroll]] for (uint e = 0u; e < 2u; ++e) {
+          uint r_m = (wave_m << 5u) + (e << 4u) + (tid & 15u);
+          uint out_y = r_m >> 3u;
+          uint out_x = r_m & 7u;
+          uint r_halo = (out_y + ky) * 10u + (out_x + kx);
+          uint a_vbase = k_chunk << 2u;
+          const uint c_pair0 = a_vbase >> 1u;
+          const uint c_swz0 = (c_pair0 ^ r_halo & 15u) << 1u;
+          const uint c_pair1 = a_vbase + 2u >> 1u;
+          const uint c_swz1 = (c_pair1 ^ r_halo & 15u) << 1u;
+          f16vec4 a0 = a_halo[r_halo][c_swz0];
+          f16vec4 a1 = a_halo[r_halo][c_swz0 + 1u];
+          f16vec4 a2 = a_halo[r_halo][c_swz1];
+          f16vec4 a3 = a_halo[r_halo][c_swz1 + 1u];
+          a_frag[e][0] = a0.x;
+          a_frag[e][1] = a0.y;
+          a_frag[e][2] = a0.z;
+          a_frag[e][3] = a0.w;
+          a_frag[e][4] = a1.x;
+          a_frag[e][5] = a1.y;
+          a_frag[e][6] = a1.z;
+          a_frag[e][7] = a1.w;
+          a_frag[e][8] = a2.x;
+          a_frag[e][9] = a2.y;
+          a_frag[e][10] = a2.z;
+          a_frag[e][11] = a2.w;
+          a_frag[e][12] = a3.x;
+          a_frag[e][13] = a3.y;
+          a_frag[e][14] = a3.z;
+          a_frag[e][15] = a3.w;
+        }
+        [[unroll]] for (uint l = 0u; l < 2u; ++l) {
+          uint r_b = tid & 15u;
+          uint b_vbase = (wave_n << 3u) + (l << 2u);
+          const uint b_pair0 = b_vbase >> 1u;
+          const uint b_swz0 = (b_pair0 ^ r_b & 15u) << 1u;
+          const uint b_pair1 = b_vbase + 2u >> 1u;
+          const uint b_swz1 = (b_pair1 ^ r_b & 15u) << 1u;
+          f16vec4 b0 = b_lds[r_b][b_swz0];
+          f16vec4 b1 = b_lds[r_b][b_swz0 + 1u];
+          f16vec4 b2 = b_lds[r_b][b_swz1];
+          f16vec4 b3 = b_lds[r_b][b_swz1 + 1u];
+          b_frag[0] = b0.x;
+          b_frag[1] = b0.y;
+          b_frag[2] = b0.z;
+          b_frag[3] = b0.w;
+          b_frag[4] = b1.x;
+          b_frag[5] = b1.y;
+          b_frag[6] = b1.z;
+          b_frag[7] = b1.w;
+          b_frag[8] = b2.x;
+          b_frag[9] = b2.y;
+          b_frag[10] = b2.z;
+          b_frag[11] = b2.w;
+          b_frag[12] = b3.x;
+          b_frag[13] = b3.y;
+          b_frag[14] = b3.z;
+          b_frag[15] = b3.w;
+          [[unroll]] for (uint e = 0u; e < 2u; ++e)
+            c_frag[e][l] = coopMatMulAdd(b_frag, a_frag[e], c_frag[e][l]);
+        }
+        barrier();
+      }
+    }
+  }
+  [[unroll]] for (uint e = 0u; e < 2u; ++e) {
+    uint out_r = (wave_m << 5u) + (e << 4u) + (tid & 15u);
+    uint out_y = block_base_y + (out_r >> 3u);
+    uint out_x = block_base_x + (out_r & 7u);
+    bool valid_spatial = (out_y < 1024u) && (out_x < 1024u);
+    [[unroll]] for (uint l = 0u; l < 2u; ++l) {
+      uint out_c = (wave_n << 5u) + (l << 4u) + ((tid >> 1u) & 8u);
+      uint out_c_vec4 = out_c >> 2u;
+      if (valid_spatial) {
+        const uint out_idx = ((out_y << 10u) + out_x << 5u) + out_c_vec4;
+        f16vec4 bias0 = buffer_bias[out_c_vec4];
+        f16vec4 bias1 = buffer_bias[out_c_vec4 + 1u];
+        MatOut d = MatOut(c_frag[e][l]);
+        f16vec4 d0 = f16vec4(d[0], d[1], d[2], d[3]);
+        f16vec4 d1 = f16vec4(d[4], d[5], d[6], d[7]);
+        buffer_out[out_idx] = d0 + bias0;
+        buffer_out[out_idx + 1u] = d1 + bias1;
+      }
+    }
+  }
+}

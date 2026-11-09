@@ -1,0 +1,83 @@
+#version 460
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+layout(local_size_x = 32, local_size_y = 8, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly restrict buffer In {
+  f16vec4 buffer_in[];
+};
+
+layout(std430, set = 0, binding = 1) readonly restrict buffer Weight {
+  f16vec4 buffer_w[];
+};
+
+layout(std430, set = 0, binding = 2) readonly restrict buffer Bias {
+  float16_t buffer_bias[];
+};
+
+layout(std430, set = 0, binding = 3) writeonly restrict buffer Out {
+  uint8_t buffer_out[];
+};
+
+void main() {
+  const uint tid = gl_LocalInvocationID.x;
+  const uint wave_id = gl_LocalInvocationID.y;
+  const uint px = (gl_WorkGroupID.x << 3u) + wave_id;
+  const uint py = gl_WorkGroupID.y;
+  if (px >= 1024u || py >= 1024u) {
+    return;
+  }
+  vec3 pixel_acc = vec3(0.0f);
+  [[unroll]] for (uint ky = 0u; ky < 3u; ++ky) {
+    const uint iy = py + ky - 1u;
+    const bool valid_y = iy < 1024u;
+    [[unroll]] for (uint kx = 0u; kx < 3u; ++kx) {
+      const uint ix = px + kx - 1u;
+      const bool valid = valid_y && (ix < 1024u);
+      if (valid) {
+        const uint in_idx = ((iy << 10u) + ix << 5u) + tid;
+        const f16vec4 in_v = buffer_in[in_idx];
+        const vec4 in_f = vec4(in_v);
+        const uint w_idx_base = ((ky * 3u + kx) << 5u) + tid;
+        const f16vec4 w0 = buffer_w[w_idx_base];
+        pixel_acc.x = fma(in_f.x, float(w0.x), pixel_acc.x);
+        pixel_acc.x = fma(in_f.y, float(w0.y), pixel_acc.x);
+        pixel_acc.x = fma(in_f.z, float(w0.z), pixel_acc.x);
+        pixel_acc.x = fma(in_f.w, float(w0.w), pixel_acc.x);
+        const f16vec4 w1 = buffer_w[288u + w_idx_base];
+        pixel_acc.y = fma(in_f.x, float(w1.x), pixel_acc.y);
+        pixel_acc.y = fma(in_f.y, float(w1.y), pixel_acc.y);
+        pixel_acc.y = fma(in_f.z, float(w1.z), pixel_acc.y);
+        pixel_acc.y = fma(in_f.w, float(w1.w), pixel_acc.y);
+        const f16vec4 w2 = buffer_w[576u + w_idx_base];
+        pixel_acc.z = fma(in_f.x, float(w2.x), pixel_acc.z);
+        pixel_acc.z = fma(in_f.y, float(w2.y), pixel_acc.z);
+        pixel_acc.z = fma(in_f.z, float(w2.z), pixel_acc.z);
+        pixel_acc.z = fma(in_f.w, float(w2.w), pixel_acc.z);
+      }
+    }
+  }
+  const float sum_x = subgroupAdd(pixel_acc.x);
+  const float sum_y = subgroupAdd(pixel_acc.y);
+  const float sum_z = subgroupAdd(pixel_acc.z);
+  if (tid == 0u) {
+    float out_x = sum_x + float(buffer_bias[0]);
+    float out_y = sum_y + float(buffer_bias[1]);
+    float out_z = sum_z + float(buffer_bias[2]);
+    out_x = clamp(round(out_x), 0.0f, 255.0f);
+    out_y = clamp(round(out_y), 0.0f, 255.0f);
+    out_z = clamp(round(out_z), 0.0f, 255.0f);
+    const uint out_idx = ((py << 10u) + px) * 3u;
+    buffer_out[out_idx] = uint8_t(out_x);
+    buffer_out[out_idx + 1u] = uint8_t(out_y);
+    buffer_out[out_idx + 2u] = uint8_t(out_z);
+  }
+}

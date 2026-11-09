@@ -1,0 +1,89 @@
+#version 460
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly restrict buffer In {
+  f16vec4 buffer_in[];
+};
+
+layout(std430, set = 0, binding = 1) readonly restrict buffer Gamma {
+  f16vec4 buffer_gamma[];
+};
+
+layout(std430, set = 0, binding = 2) readonly restrict buffer Beta {
+  f16vec4 buffer_beta[];
+};
+
+layout(std430, set = 0, binding = 3) writeonly restrict buffer Out {
+  f16vec4 buffer_out[];
+};
+
+shared vec2 wave_stats[8];
+
+const float INV_D = 1.0f / 262144.0f;
+const float EPS = 1e-6f;
+
+void main() {
+  const uint tid = gl_LocalInvocationID.x;
+  const uint g = gl_WorkGroupID.x;
+  const uint group_v4_off = g << 2u;
+  float thread_sum = 0.0f;
+  float thread_sum_sq = 0.0f;
+  for (uint i = 0u; i < 64u; ++i) {
+    const uint pixel = (i << 8u) + tid;
+    const uint base_idx = (pixel << 7u) + group_v4_off;
+    [[unroll]] for (uint v = 0u; v < 4u; ++v) {
+      const vec4 d = vec4(buffer_in[base_idx + v]);
+      thread_sum += (d.x + d.y) + (d.z + d.w);
+      thread_sum_sq = fma(d.x, d.x, thread_sum_sq);
+      thread_sum_sq = fma(d.y, d.y, thread_sum_sq);
+      thread_sum_sq = fma(d.z, d.z, thread_sum_sq);
+      thread_sum_sq = fma(d.w, d.w, thread_sum_sq);
+    }
+  }
+  const vec2 wave_total = subgroupAdd(vec2(thread_sum, thread_sum_sq));
+  if (subgroupElect()) {
+    wave_stats[gl_SubgroupID] = wave_total;
+  }
+  barrier();
+  if (tid == 0u) {
+    vec2 block_total = vec2(0.0f);
+    [[unroll]] for (uint i = 0u; i < 8u; ++i)
+      block_total += wave_stats[i];
+    const float mean = block_total.x * INV_D;
+    const float var = max(0.0f, fma(-mean, mean, block_total.y * INV_D));
+    const float rstd = inversesqrt(var + EPS);
+    wave_stats[0] = vec2(mean, rstd);
+  }
+  barrier();
+  const float mean = wave_stats[0].x;
+  const float rstd = wave_stats[0].y;
+  const float neg_mean_rstd = -mean * rstd;
+  vec4 g_v[4];
+  vec4 b_v[4];
+  [[unroll]] for (uint v = 0u; v < 4u; ++v) {
+    g_v[v] = vec4(buffer_gamma[group_v4_off + v]);
+    b_v[v] = vec4(buffer_beta[group_v4_off + v]);
+  }
+  const f16vec4 log2e = f16vec4(-1.44269504hf);
+  const f16vec4 one = f16vec4(1.0hf);
+  for (uint i = 0u; i < 64u; ++i) {
+    const uint pixel = (i << 8u) + tid;
+    const uint base_idx = (pixel << 7u) + group_v4_off;
+    [[unroll]] for (uint v = 0u; v < 4u; ++v) {
+      const uint idx = base_idx + v;
+      const vec4 d = vec4(buffer_in[idx]);
+      const vec4 x_n = fma(d, vec4(rstd), vec4(neg_mean_rstd));
+      const f16vec4 y = f16vec4(fma(x_n, g_v[v], b_v[v]));
+      const f16vec4 sig = one / (exp2(y * log2e) + one);
+      buffer_out[idx] = y * sig;
+    }
+  }
+}
