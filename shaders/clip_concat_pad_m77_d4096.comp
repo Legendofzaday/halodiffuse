@@ -1,0 +1,46 @@
+#version 460
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_KHR_shader_subgroup_basic : require
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly restrict buffer Clip1 {
+  f16vec4 buffer_clip1[];
+};
+
+layout(std430, set = 0, binding = 1) readonly restrict buffer Clip2 {
+  f16vec4 buffer_clip2[];
+};
+
+layout(std430, set = 0, binding = 2) writeonly restrict buffer Out {
+  f16vec4 buffer_out[];
+};
+
+void main() {
+  const uint tid = gl_LocalInvocationID.x;
+  const uint row = gl_WorkGroupID.x;
+  if (row >= 77u) {
+    return;
+  }
+  const uint out_base = row << 10u;
+  const uint clip1_base = row * 192u;
+  const uint clip2_base = row * 320u;
+  [[unroll]] for (uint i = 0u; i < 4u; ++i) {
+    const uint offset = (i << 8u) + tid;
+    f16vec4 val = f16vec4(0.0hf);
+    if (i == 0u) {
+      if (tid < 192u) {
+        val = buffer_clip1[clip1_base + tid];
+      } else {
+        val = buffer_clip2[clip2_base + tid - 192u];
+      }
+    } else if (i == 1u) {
+      val = buffer_clip2[clip2_base + tid + 64u];
+    }
+    buffer_out[out_base + offset] = val;
+  }
+}
