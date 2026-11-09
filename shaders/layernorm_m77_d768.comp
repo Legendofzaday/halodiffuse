@@ -1,0 +1,62 @@
+#version 460
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+
+layout(local_size_x = 192, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly restrict buffer dataV4 {
+  f16vec4 data_v4[];
+};
+
+layout(std430, set = 0, binding = 1) readonly restrict buffer gammaV4 {
+  f16vec4 gamma_v4[];
+};
+
+layout(std430, set = 0, binding = 2) readonly restrict buffer betaV4 {
+  f16vec4 beta_v4[];
+};
+
+layout(std430, set = 0, binding = 3) writeonly restrict buffer normV4 {
+  f16vec4 norm_v4[];
+};
+
+shared vec2 wave_stats[6];
+
+const float INV_D = 1.0f / 768.0f;
+const float EPS = 1e-5f;
+
+void main() {
+  const uint tid = gl_LocalInvocationID.x;
+  const uint wgid = gl_WorkGroupID.x;
+  const uint row_offset = wgid * 192u;
+  const f16vec4 d_v4 = data_v4[row_offset + tid];
+  const vec4 d = vec4(d_v4);
+  float thread_sum = (d.x + d.y) + (d.z + d.w);
+  float thread_sum_sq = 0.0f;
+  thread_sum_sq = fma(d.x, d.x, thread_sum_sq);
+  thread_sum_sq = fma(d.y, d.y, thread_sum_sq);
+  thread_sum_sq = fma(d.z, d.z, thread_sum_sq);
+  thread_sum_sq = fma(d.w, d.w, thread_sum_sq);
+  const vec2 wave_total = subgroupAdd(vec2(thread_sum, thread_sum_sq));
+  if (subgroupElect()) {
+    wave_stats[gl_SubgroupID] = wave_total;
+  }
+  barrier();
+  vec2 block_total = vec2(0.0f);
+  [[unroll]]
+  for (uint i = 0u; i < 6u; ++i) {
+    block_total += wave_stats[i];
+  }
+  const float mean = block_total.x * INV_D;
+  const float var = max(0.0f, fma(-mean, mean, block_total.y * INV_D));
+  const float rstd = inversesqrt(var + EPS);
+  const float neg_mean_rstd = -mean * rstd;
+  const vec4 g = vec4(gamma_v4[tid]);
+  const vec4 b = vec4(beta_v4[tid]);
+  const vec4 x_n = fma(d, vec4(rstd), vec4(neg_mean_rstd));
+  norm_v4[row_offset + tid] = f16vec4(fma(x_n, g, b));
+}

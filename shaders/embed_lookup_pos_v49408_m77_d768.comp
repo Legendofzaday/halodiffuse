@@ -1,0 +1,41 @@
+#version 460
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_KHR_shader_subgroup_basic : require
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly restrict buffer TokenIds {
+  uint buffer_token_ids[];
+};
+
+layout(std430, set = 0, binding = 1) readonly restrict buffer EmbedWeights {
+  f16vec4 buffer_embed_weights[];
+};
+
+layout(std430, set = 0, binding = 2) readonly restrict buffer PosWeights {
+  f16vec4 buffer_pos_weights[];
+};
+
+layout(std430, set = 0, binding = 3) writeonly restrict buffer Out {
+  f16vec4 buffer_out[];
+};
+
+void main() {
+  const uint tid = gl_LocalInvocationID.x;
+  const uint token_idx = gl_WorkGroupID.x;
+  const uint token_id = buffer_token_ids[token_idx];
+  const uint safe_token_id = min(token_id, 49407u);
+  const uint weight_base = safe_token_id * 192u;
+  const uint pos_base = token_idx * 192u;
+  const uint out_base = token_idx * 192u;
+  [[unroll]] for (uint i = 0u; i < 3u; ++i) {
+    const uint offset = (i << 6u) + tid;
+    const f16vec4 token_emb = buffer_embed_weights[weight_base + offset];
+    const f16vec4 pos_emb = buffer_pos_weights[pos_base + offset];
+    buffer_out[out_base + offset] = token_emb + pos_emb;
+  }
+}

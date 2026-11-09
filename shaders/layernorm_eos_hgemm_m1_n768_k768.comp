@@ -1,0 +1,115 @@
+#version 460
+
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_shuffle_relative : require
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly restrict buffer A {
+  f16vec4 buffer_a[];
+};
+
+layout(std430, set = 0, binding = 1) readonly restrict buffer Gamma {
+  f16vec4 buffer_gamma[];
+};
+
+layout(std430, set = 0, binding = 2) readonly restrict buffer Beta {
+  f16vec4 buffer_beta[];
+};
+
+layout(std430, set = 0, binding = 3) readonly restrict buffer B {
+  f16vec4 buffer_b[];
+};
+
+layout(std430, set = 0, binding = 4) readonly restrict buffer Bias {
+  f16vec4 buffer_bias[];
+};
+
+layout(std430, set = 0, binding = 5) writeonly restrict buffer C {
+  f16vec4 buffer_c[];
+};
+
+shared f16vec4 ln_a[192];
+shared vec2 wave_stats[8];
+shared vec4 wave_sums[8][33];
+
+const float INV_D = 1.0f / 768.0f;
+const float EPS = 1e-5f;
+
+void main() {
+  const uint tid = gl_LocalInvocationID.x;
+  float thread_sum = 0.0f;
+  float thread_sum_sq = 0.0f;
+  f16vec4 a_val = f16vec4(0.0hf);
+  if (tid < 192u) {
+    a_val = buffer_a[tid];
+    const vec4 a_f32 = vec4(a_val);
+    thread_sum = (a_f32.x + a_f32.y) + (a_f32.z + a_f32.w);
+    thread_sum_sq = fma(a_f32.x, a_f32.x, thread_sum_sq);
+    thread_sum_sq = fma(a_f32.y, a_f32.y, thread_sum_sq);
+    thread_sum_sq = fma(a_f32.z, a_f32.z, thread_sum_sq);
+    thread_sum_sq = fma(a_f32.w, a_f32.w, thread_sum_sq);
+  }
+  const vec2 wave_total = subgroupAdd(vec2(thread_sum, thread_sum_sq));
+  if (subgroupElect()) {
+    wave_stats[gl_SubgroupID] = wave_total;
+  }
+  barrier();
+  if (tid == 0u) {
+    vec2 block_total = vec2(0.0f);
+    [[unroll]] for (uint i = 0u; i < 8u; ++i) { block_total += wave_stats[i]; }
+    const float mean = block_total.x * INV_D;
+    const float var = max(0.0f, fma(-mean, mean, block_total.y * INV_D));
+    const float rstd = inversesqrt(var + EPS);
+    wave_stats[0] = vec2(mean, rstd);
+  }
+  barrier();
+  const float mean = wave_stats[0].x;
+  const float rstd = wave_stats[0].y;
+  const float neg_mean_rstd = -mean * rstd;
+  if (tid < 192u) {
+    const vec4 a_f32 = vec4(a_val);
+    const vec4 x_n = fma(a_f32, vec4(rstd), vec4(neg_mean_rstd));
+    const vec4 g = vec4(buffer_gamma[tid]);
+    const vec4 b = vec4(buffer_beta[tid]);
+    ln_a[tid] = f16vec4(fma(x_n, g, b));
+  }
+  barrier();
+  const uint n_tid = tid & 31u;
+  const uint k_tid = tid >> 5u;
+  const uint wg_col_base = gl_WorkGroupID.x << 5u;
+  const uint col_vec4_idx = wg_col_base + n_tid;
+  vec4 acc = vec4(0.0f);
+  uint b_idx = (k_tid << 2u) * 192u + col_vec4_idx;
+  [[unroll]] for (uint i = 0u; i < 24u; ++i) {
+    const uint k_vec4_idx = (i << 3u) + k_tid;
+    const vec4 a_ln_val = vec4(ln_a[k_vec4_idx]);
+    const vec4 b0 = vec4(buffer_b[b_idx]);
+    const vec4 b1 = vec4(buffer_b[b_idx + 192u]);
+    const vec4 b2 = vec4(buffer_b[b_idx + 384u]);
+    const vec4 b3 = vec4(buffer_b[b_idx + 576u]);
+    acc = fma(vec4(a_ln_val.x), b0, acc);
+    acc = fma(vec4(a_ln_val.y), b1, acc);
+    acc = fma(vec4(a_ln_val.z), b2, acc);
+    acc = fma(vec4(a_ln_val.w), b3, acc);
+    b_idx += 6144u;
+  }
+  wave_sums[k_tid][n_tid] = acc;
+  barrier();
+  const uint wave_id = tid & 7u;
+  const uint col_id = tid >> 3u;
+  vec4 block_sum = wave_sums[wave_id][col_id];
+  block_sum += subgroupShuffleDown(block_sum, 4u);
+  block_sum += subgroupShuffleDown(block_sum, 2u);
+  block_sum += subgroupShuffleDown(block_sum, 1u);
+  if (wave_id == 0u) {
+    const uint out_col_idx = wg_col_base + col_id;
+    const vec4 b_bias = vec4(buffer_bias[out_col_idx]);
+    buffer_c[out_col_idx] = f16vec4(block_sum + b_bias);
+  }
+}
