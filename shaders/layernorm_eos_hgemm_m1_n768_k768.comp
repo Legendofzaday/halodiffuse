@@ -62,7 +62,8 @@ void main() {
   barrier();
   if (tid == 0u) {
     vec2 block_total = vec2(0.0f);
-    [[unroll]] for (uint i = 0u; i < 8u; ++i) { block_total += wave_stats[i]; }
+    [[unroll]] for (uint i = 0u; i < 8u; ++i)
+      block_total += wave_stats[i];
     const float mean = block_total.x * INV_D;
     const float var = max(0.0f, fma(-mean, mean, block_total.y * INV_D));
     const float rstd = inversesqrt(var + EPS);

@@ -61,7 +61,6 @@ void main() {
     [[unroll]] for (uint i = 0u; i < 8u; ++i) {
       const uint r = (tid >> 4u) + (i << 4u);
       const uint c_swz = (c ^ r & 15u) << 1u;
-
       const uint b_off = b_idx + 9216u * i;
       b_lds[r][c_swz] = buffer_b[b_off];
       b_lds[r][c_swz + 1u] = buffer_b[b_off + 1u];

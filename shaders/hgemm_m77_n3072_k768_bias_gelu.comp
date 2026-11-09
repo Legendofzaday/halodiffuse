@@ -141,7 +141,6 @@ void main() {
         b_frag[13] = b3.y;
         b_frag[14] = b3.z;
         b_frag[15] = b3.w;
-
         [[unroll]] for (uint e = 0u; e < 2u; ++e)
           c_frag[e] = coopMatMulAdd(b_frag, a_frag[e], c_frag[e]);
       }

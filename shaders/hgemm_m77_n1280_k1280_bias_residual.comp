@@ -57,7 +57,6 @@ void main() {
     [[unroll]] for (uint i = 0u; i < 8u; ++i) {
       const uint r = (tid >> 4u) + (i << 4u);
       const uint c_swz = (c ^ r & 15u) << 1u;
-
       const uint b_off = b_idx + 5120u * i;
       b_lds[r][c_swz] = buffer_b[b_off];
       b_lds[r][c_swz + 1u] = buffer_b[b_off + 1u];
@@ -80,7 +79,6 @@ void main() {
         a_prefetch[j][1] = buffer_a[a_off + 1u];
       }
       [[unroll]] for (uint j = 0u; j < 8u; ++j) {
-
         const uint b_off = b_idx + 5120u * j + 40960u;
         b_prefetch[j][0] = buffer_b[b_off];
         b_prefetch[j][1] = buffer_b[b_off + 1u];
@@ -172,8 +170,7 @@ void main() {
   [[unroll]] for (uint e = 0u; e < 2u; ++e) {
     const uint row_idx = c_r_base + (e << 4u);
     if (row_idx < 77u) {
-      const uint c_row_offset = row_idx * 320u;
-      const uint c_idx = c_row_offset + col_vec4_idx;
+      const uint c_idx = row_idx * 320u + col_vec4_idx;
       const MatAcc acc = c_frag[e];
       const vec4 d0 = vec4(acc[0], acc[1], acc[2], acc[3]);
       const vec4 d1 = vec4(acc[4], acc[5], acc[6], acc[7]);
