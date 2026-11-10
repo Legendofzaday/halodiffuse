@@ -8,4 +8,5 @@ repository = "https://github.com/Legendofzaday/halodiffuse"
 readme = "README.md"
 
 [dependencies]
-vulkano = "*"
+vulkano = { version = "0.35.2", default-features = false, features = ["macros"] }
+tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
