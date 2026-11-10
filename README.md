@@ -26,7 +26,7 @@ halodiffuse "orange cat" ~/Pictures
 chmod +x halodiffuse
 sudo mv halodiffuse /usr/local/bin/
 pip install torch safetensors huggingface_hub
-huggingface-cli login
+hf auth login
 python install.py
 ```
 
