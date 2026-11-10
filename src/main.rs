@@ -1595,7 +1595,7 @@ fn main() {
     } else {
         out_arg
     };
-    let data_dir = Path::new(env!("HOME")).join(".local/share/halodiffuse");
+    let data_dir = PathBuf::from(env::var("HOME").unwrap()).join(".local/share/halodiffuse");
     let engine = Engine::new();
     let tok_l = Tokenizer::from_bytes(include_bytes!(concat!(
         env!("OUT_DIR"),
