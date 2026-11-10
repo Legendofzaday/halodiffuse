@@ -7,6 +7,12 @@ license = "AGPL-3.0-only"
 repository = "https://github.com/Legendofzaday/halodiffuse"
 readme = "README.md"
 
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
 [dependencies]
 vulkano = { version = "0.35.2", default-features = false, features = ["macros"] }
 tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
