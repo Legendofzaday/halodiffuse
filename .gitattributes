@@ -1,2 +1,2 @@
 * text=auto eol=lf
-*.comp text diff=cpp linguist-language=GLSL
+*.comp text diff=glsl linguist-language=GLSL
