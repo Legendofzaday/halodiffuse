@@ -7,5 +7,6 @@
 !.gitignore
 !build.rs
 !Cargo.toml
+!install.py
 !LICENSE
 !README.md
