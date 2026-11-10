@@ -1,4 +1,13 @@
 #!/usr/bin/env python3
+import os
+
+# Must be set BEFORE importing huggingface_hub to disable buggy Xet CAS reconstruction
+# and use standard resumable HTTP Range downloads instead.
+os.environ["HF_HUB_DISABLE_XET"] = "1"
+os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "300"
+
+import argparse
+import time
 from pathlib import Path
 import torch
 from huggingface_hub import hf_hub_download
@@ -290,20 +299,78 @@ def convert_vae(input_path: Path, output_path: Path):
     save_file(out, str(output_path))
 
 
-def fetch(filename: str) -> Path:
-    local = Path("sd35_turbo_raw") / filename
-    if local.exists():
-        return local
-    print(f"[*] Downloading {filename} from {REPO_ID}...")
-    return Path(hf_hub_download(repo_id=REPO_ID, filename=filename))
+def fetch(filename: str, raw_dirs: list[Path]) -> Path:
+    basename = Path(filename).name
+    for d in raw_dirs:
+        for candidate in (d / filename, d / basename):
+            if candidate.exists():
+                print(f"[*] Using local weight file: {candidate}")
+                return candidate
+
+    for attempt in range(1, 11):
+        try:
+            print(f"[*] Downloading {filename} from {REPO_ID} (attempt {attempt}/10, HTTP Range resume enabled)...")
+            return Path(hf_hub_download(repo_id=REPO_ID, filename=filename))
+        except Exception as e:
+            print(f"[!] Download interrupted ({e}). Retrying in 5 seconds...")
+            time.sleep(5)
+    raise RuntimeError(f"Failed to download {filename} after 10 attempts.")
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Download and pack SD 3.5 Large Turbo weights for HaloDiffuse")
+    parser.add_argument("path", nargs="?", type=Path, default=None, help="Optional path to folder with already-downloaded weights")
+    parser.add_argument("--raw-dir", type=Path, default=None, help="Optional path to folder with already-downloaded weights")
+    parser.add_argument("--force", action="store_true", help="Re-pack weights even if output files already exist")
+    args = parser.parse_args()
+
+    search_dirs = []
+    if args.path is not None:
+        search_dirs.append(args.path.expanduser().resolve())
+    if args.raw_dir is not None:
+        search_dirs.append(args.raw_dir.expanduser().resolve())
+    search_dirs.append(Path("sd35_turbo_raw").resolve())
+
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    convert_clip(fetch("text_encoders/clip_l.safetensors"), OUT_DIR / "clip_l.safetensors", 768, 12)
-    convert_clip(fetch("text_encoders/clip_g.safetensors"), OUT_DIR / "clip_g.safetensors", 1280, 32)
-    convert_t5(fetch("text_encoders/t5xxl_fp16.safetensors"), OUT_DIR / "t5xxl.safetensors")
-    mmdit_raw = fetch("sd3.5_large_turbo.safetensors")
-    convert_mmdit(mmdit_raw, OUT_DIR / "mmdit.safetensors")
-    convert_vae(mmdit_raw, OUT_DIR / "vae.safetensors")
+
+    clip_l_out = OUT_DIR / "clip_l.safetensors"
+    if args.force or not clip_l_out.exists():
+        convert_clip(fetch("text_encoders/clip_l.safetensors", search_dirs), clip_l_out, 768, 12)
+    else:
+        print(f"[✓] Skipping {clip_l_out} (already exists)")
+
+    clip_g_out = OUT_DIR / "clip_g.safetensors"
+    if args.force or not clip_g_out.exists():
+        convert_clip(fetch("text_encoders/clip_g.safetensors", search_dirs), clip_g_out, 1280, 32)
+    else:
+        print(f"[✓] Skipping {clip_g_out} (already exists)")
+
+    t5_out = OUT_DIR / "t5xxl.safetensors"
+    if args.force or not t5_out.exists():
+        convert_t5(fetch("text_encoders/t5xxl_fp16.safetensors", search_dirs), t5_out)
+    else:
+        print(f"[✓] Skipping {t5_out} (already exists)")
+
+    mmdit_out = OUT_DIR / "mmdit.safetensors"
+    vae_out = OUT_DIR / "vae.safetensors"
+    if args.force or not mmdit_out.exists() or not vae_out.exists():
+        mmdit_raw = fetch("sd3.5_large_turbo.safetensors", search_dirs)
+        if args.force or not mmdit_out.exists():
+            convert_mmdit(mmdit_raw, mmdit_out)
+        else:
+            print(f"[✓] Skipping {mmdit_out} (already exists)")
+
+        if args.force or not vae_out.exists():
+            vae_raw = mmdit_raw
+            for d in search_dirs:
+                for cand in (d / "vae/diffusion_pytorch_model.safetensors", d / "diffusion_pytorch_model.safetensors"):
+                    if cand.exists():
+                        vae_raw = cand
+                        break
+            convert_vae(vae_raw, vae_out)
+        else:
+            print(f"[✓] Skipping {vae_out} (already exists)")
+    else:
+        print(f"[✓] Skipping {mmdit_out} and {vae_out} (already exist)")
+
     print(f"[+] All weights ready in {OUT_DIR}!")
