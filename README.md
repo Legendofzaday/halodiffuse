@@ -27,7 +27,7 @@ chmod +x halodiffuse
 sudo mv halodiffuse /usr/local/bin/
 pip install torch safetensors huggingface_hub
 hf auth login
-python install.py # Optional path see help
+python install.py # Optional parameters see help
 ```
 
 ## Benchmarks
