@@ -1,8 +1,5 @@
-#!/usr/bin/env python3
 import os
 
-# Must be set BEFORE importing huggingface_hub to disable buggy Xet CAS reconstruction
-# and use standard resumable HTTP Range downloads instead.
 os.environ["HF_HUB_DISABLE_XET"] = "1"
 os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "300"
 
@@ -17,17 +14,14 @@ REPO_ID = "stabilityai/stable-diffusion-3.5-large-turbo"
 OUT_DIR = Path.home() / ".local/share/halodiffuse"
 PERM_N = torch.tensor([((r & 1) << 3) | (r >> 1) for r in range(16)], dtype=torch.long)
 
-
 def to_fp16_contig(t: torch.Tensor) -> torch.Tensor:
     return t.to(torch.float32).clamp(-65504.0, 65504.0).to(torch.float16).contiguous()
-
 
 def pack_b_tiles_16x16(b_logical: torch.Tensor) -> torch.Tensor:
     b = to_fp16_contig(b_logical)
     k, n = b.shape
     t = b.reshape(k // 16, 16, n // 16, 16)[:, :, :, PERM_N]
     return t.permute(0, 3, 2, 1).reshape(k, n).contiguous()
-
 
 def strip_prefix(state_dict: dict, prefixes: list[str]) -> dict:
     out = {}
@@ -40,17 +34,14 @@ def strip_prefix(state_dict: dict, prefixes: list[str]) -> dict:
         out[new_k] = v
     return out
 
-
 def rmsnorm_fp16(x_f16: torch.Tensor, gamma_f16: torch.Tensor) -> torch.Tensor:
     x = x_f16.float()
     rstd = torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + 1e-6)
     return (x * rstd * gamma_f16.float()).to(torch.float16)
 
-
 def gelu_new_fp32(x: torch.Tensor) -> torch.Tensor:
     c = -2.30198566 * (x + 0.044715 * x * x * x)
     return x / (1.0 + torch.exp2(c))
-
 
 def fold_adaln_bias_6(bias: torch.Tensor) -> torch.Tensor:
     b = bias.to(torch.float32).clone()
@@ -58,12 +49,10 @@ def fold_adaln_bias_6(bias: torch.Tensor) -> torch.Tensor:
     b[9728:12160] += 1.0
     return b
 
-
 def fold_adaln_bias_2(bias: torch.Tensor) -> torch.Tensor:
     b = bias.to(torch.float32).clone()
     b[2432:4864] += 1.0
     return b
-
 
 def convert_clip(input_path: Path, output_path: Path, d_model: int, num_layers: int):
     print(f"[*] Packing CLIP (d={d_model}) -> {output_path}...")
@@ -97,7 +86,6 @@ def convert_clip(input_path: Path, output_path: Path, d_model: int, num_layers: 
     out["eos_proj.weight"] = to_fp16_contig(proj_w)
     out["eos_proj.bias"] = to_fp16_contig(sd.get("text_projection.bias", torch.zeros(d_model)))
     save_file(out, str(output_path))
-
 
 @torch.no_grad()
 def convert_t5(input_path: Path, output_path: Path):
@@ -164,7 +152,6 @@ def convert_t5(input_path: Path, output_path: Path):
         out[f"blocks.{i}.ffn.wo.weight"] = pack_b_tiles_16x16(wo_ffn_scaled.T)
     out["final_ln.gamma"] = to_fp16_contig(sd["encoder.final_layer_norm.weight"])
     save_file(out, str(output_path))
-
 
 def convert_mmdit(input_path: Path, output_path: Path):
     print(f"[*] Packing MMDiT -> {output_path}...")
@@ -236,7 +223,6 @@ def convert_mmdit(input_path: Path, output_path: Path):
     out["final_layer.linear.bias"] = to_fp16_contig(fl_b)
     save_file(out, str(output_path))
 
-
 def convert_vae(input_path: Path, output_path: Path):
     print(f"[*] Packing VAE -> {output_path}...")
     sd = strip_prefix(load_file(str(input_path)), ["first_stage_model.", ""])
@@ -298,7 +284,6 @@ def convert_vae(input_path: Path, output_path: Path):
     out["conv_out.bias"] = to_fp16_contig(b_out.to(torch.float32) * 127.5 + 127.5)
     save_file(out, str(output_path))
 
-
 def fetch(filename: str, raw_dirs: list[Path]) -> Path:
     basename = Path(filename).name
     for d in raw_dirs:
@@ -315,7 +300,6 @@ def fetch(filename: str, raw_dirs: list[Path]) -> Path:
             print(f"[!] Download interrupted ({e}). Retrying in 5 seconds...")
             time.sleep(5)
     raise RuntimeError(f"Failed to download {filename} after 10 attempts.")
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Download and pack SD 3.5 Large Turbo weights for HaloDiffuse")
