@@ -45,14 +45,14 @@ fn main() {
         ),
         (
             "tokenizer_t5.json",
-            "https://huggingface.co/google/t5-v1_1-xxl/resolve/main/tokenizer.json",
+            "https://huggingface.co/google/flan-t5-xxl/resolve/main/tokenizer.json",
         ),
     ] {
         let dst = out_dir.join(file);
-        if !dst.exists() {
+        if dst.metadata().map(|m| m.len() < 1000).unwrap_or(true) {
             assert!(
                 Command::new("curl")
-                    .args(["-sSL", url, "-o"])
+                    .args(["-fsSL", url, "-o"])
                     .arg(&dst)
                     .status()
                     .unwrap()
