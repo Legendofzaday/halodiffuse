@@ -36,7 +36,7 @@ Stable Diffusion 3.5 Large Turbo FP16 1024x1024 Batch Size 1
 
 | Engine                    | Backend      | Precision   | End-to-End     | Runtime                   |
 | :------------------------ | :----------- | :---------- | :------------- | :------------------------ |
-| **`halodiffuse`**         | **`Vulkan`** | **`FP16`**  | **`5.3 s`**    | **`~15.5 MB binary`**       |
+| **`halodiffuse`**         | **`Vulkan`** | **`FP16`**  | **`5.3 s`**    | **`~15.5 MB binary`**     |
 | **ComfyUI**               | ROCm         | BF16 / FP16 | ~11.8 – 14.5 s | ~18 GB Python + ROCm venv |
 | **stable-diffusion.cpp**  | Vulkan       | FP16        | ~13.5 – 16.2 s | ~50 MB binary             |
 | **HuggingFace Diffusers** | ROCm         | BF16 / FP16 | ~18.4 s+       | ~18 GB Python + ROCm venv |
