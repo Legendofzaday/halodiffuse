@@ -20,7 +20,7 @@ halodiffuse "orange cat" ~/Pictures
 
 ## Installation
 
-**Required: AMD Ryzen AI Max+ 395 64GB+ Linux**
+**Required: AMD Ryzen AI Max+ 395 64GB+ Linux and agreeing to stability ai**
 
 ```bash
 chmod +x halodiffuse
