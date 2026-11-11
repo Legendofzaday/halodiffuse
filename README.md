@@ -24,6 +24,8 @@ halodiffuse --prompt "cat" --path ~/Pictures/cat.png --seed 42
 halodiffuse stop
 ```
 
+![cat](assets/cat.png)
+
 ## Installation
 
 **Requirements:**
