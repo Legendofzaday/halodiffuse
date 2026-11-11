@@ -1,6 +1,7 @@
 *
 !*/
 !.cargo/config.toml
+!assets/cat.png
 !shaders/*.comp
 !src/*.rs
 !.gitattributes
