@@ -3,12 +3,19 @@
 use std::{
     collections::HashMap,
     env,
-    fs::File,
-    io::{Read, Write},
-    os::unix::fs::FileExt,
+    fs::{self, File},
+    io::{BufRead, BufReader, Read, Write},
+    os::unix::{
+        fs::FileExt,
+        net::{UnixListener, UnixStream},
+    },
     path::{Path, PathBuf},
-    sync::Arc,
-    time::Instant,
+    process::{Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
 use tokenizers::Tokenizer;
 use vulkano::{
@@ -1586,16 +1593,44 @@ fn write_png_rgb8(path: &Path, w: u32, h: u32, rgb: &[u8]) {
     File::create(path).unwrap().write_all(&out).unwrap();
 }
 
-fn main() {
-    let mut args = env::args().skip(1);
-    let prompt = args.next().unwrap();
-    let out_arg = PathBuf::from(args.next().unwrap());
-    let out_path = if out_arg.is_dir() {
-        out_arg.join("output.png")
-    } else {
-        out_arg
-    };
-    let data_dir = PathBuf::from(env::var("HOME").unwrap()).join(".local/share/halodiffuse");
+static STOP_FLAG: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn handle_sigterm(_: i32) {
+    STOP_FLAG.store(true, Ordering::SeqCst);
+}
+
+fn get_data_dir() -> PathBuf {
+    PathBuf::from(env::var("HOME").unwrap()).join(".local/share/halodiffuse")
+}
+
+fn get_sock_path() -> PathBuf {
+    get_data_dir().join("halodiffuse.sock")
+}
+
+fn get_pid_path() -> PathBuf {
+    get_data_dir().join("halodiffuse.pid")
+}
+
+fn read_urandom_u64() -> u64 {
+    let mut f = File::open("/dev/urandom").unwrap();
+    let mut buf = [0u8; 8];
+    f.read_exact(&mut buf).unwrap();
+    u64::from_le_bytes(buf)
+}
+
+fn run_daemon() {
+    let data_dir = get_data_dir();
+    let sock_path = get_sock_path();
+    let pid_path = get_pid_path();
+    let _ = fs::remove_file(&sock_path);
+
+    unsafe {
+        unsafe extern "C" {
+            fn signal(sig: i32, handler: extern "C" fn(i32)) -> usize;
+        }
+        signal(15, handle_sigterm); // SIGTERM
+        signal(2, handle_sigterm); // SIGINT
+    }
     let engine = Engine::new();
     let tok_l = Tokenizer::from_bytes(include_bytes!(concat!(
         env!("OUT_DIR"),
@@ -1612,44 +1647,15 @@ fn main() {
         "/tokenizer_t5.json"
     )))
     .unwrap();
-    let (clip_l_bytes, eos_l) = encode_clip_tokens(&tok_l, &prompt, 49407);
-    let (clip_g_bytes, eos_g) = encode_clip_tokens(&tok_g, &prompt, 0);
-    let t5_bytes = encode_t5_tokens(&tok_t5, &prompt);
     let w_clip_l = WeightPack::load(&engine.mem_alloc, data_dir.join("clip_l.safetensors"));
     let w_clip_g = WeightPack::load(&engine.mem_alloc, data_dir.join("clip_g.safetensors"));
     let w_t5 = WeightPack::load(&engine.mem_alloc, data_dir.join("t5xxl.safetensors"));
     let w_mmdit = WeightPack::load(&engine.mem_alloc, data_dir.join("mmdit.safetensors"));
     let w_vae = WeightPack::load(&engine.mem_alloc, data_dir.join("vae.safetensors"));
     let buf_tokens_l = engine.alloc_host_bytes(77 * 4);
-    buf_tokens_l.write().unwrap().copy_from_slice(&clip_l_bytes);
     let buf_tokens_g = engine.alloc_host_bytes(77 * 4);
-    buf_tokens_g.write().unwrap().copy_from_slice(&clip_g_bytes);
     let buf_tokens_t5 = engine.alloc_host_bytes(256 * 4);
-    buf_tokens_t5.write().unwrap().copy_from_slice(&t5_bytes);
     let latents_x = engine.alloc_host_bytes(4096 * 64 * 2);
-    {
-        let mut guard = latents_x.write().unwrap();
-        let mut seed: u64 = 42;
-        let mut next_u64 = || {
-            seed = seed.wrapping_add(0x9E3779B97F4A7C15);
-            let mut z = seed;
-            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-            z ^ (z >> 31)
-        };
-        for chunk in guard.chunks_exact_mut(4) {
-            let u1 = ((next_u64() >> 11) as f64 + 0.5) / ((1u64 << 53) as f64);
-            let u2 = ((next_u64() >> 11) as f64) / ((1u64 << 53) as f64);
-            let r = (-2.0 * u1.ln()).sqrt();
-            let theta = 2.0 * std::f64::consts::PI * u2;
-            let b0 = ((r * theta.cos()) as f16).to_le_bytes();
-            let b1 = ((r * theta.sin()) as f16).to_le_bytes();
-            chunk[0] = b0[0];
-            chunk[1] = b0[1];
-            chunk[2] = b1[0];
-            chunk[3] = b1[1];
-        }
-    }
     let clip_l_seq = engine.alloc_device_bytes(77 * 768 * 2);
     let clip_g_seq = engine.alloc_device_bytes(77 * 1280 * 2);
     let y_pooled = engine.alloc_device_bytes(2048 * 2);
@@ -1668,65 +1674,269 @@ fn main() {
         })
         .collect();
     let mmdit_ws = MmditWorkspace::new(&engine);
-    let t_start = Instant::now();
-    {
-        let mut cmd = engine.new_cmd();
-        let y_l_slice = y_pooled.clone().slice(0..(768 * 2));
-        let y_g_slice = y_pooled.clone().slice((768 * 2)..(2048 * 2));
-        engine.record_clip(
-            &mut cmd,
-            &w_clip_l,
-            &buf_tokens_l,
-            eos_l,
-            768,
-            12,
-            &clip_l_seq,
-            &y_l_slice,
-        );
-        engine.record_clip(
-            &mut cmd,
-            &w_clip_g,
-            &buf_tokens_g,
-            eos_g,
-            1280,
-            32,
-            &clip_g_seq,
-            &y_g_slice,
-        );
-        let ctx_clip_slice = ctx_333.clone().slice(0..(77 * 4096 * 2));
-        engine.dispatch(
-            &mut cmd,
-            "clip_concat_pad_m77_d4096.comp",
-            [77, 1, 1],
-            &[clip_l_seq, clip_g_seq, ctx_clip_slice],
-            None,
-        );
-        engine.submit_and_wait(cmd);
-        let mut cmd_t5 = engine.new_cmd();
-        let ctx_t5_slice = ctx_333.clone().slice((77 * 4096 * 2)..(333 * 4096 * 2));
-        engine.record_t5(&mut cmd_t5, &w_t5, &buf_tokens_t5, &ctx_t5_slice);
-        engine.submit_and_wait(cmd_t5);
+    let listener = UnixListener::bind(&sock_path).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    fs::write(&pid_path, std::process::id().to_string()).unwrap();
+    while !STOP_FLAG.load(Ordering::SeqCst) {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                let mut cmd = [0u8; 1];
+                if stream.read_exact(&mut cmd).is_err() {
+                    continue;
+                }
+                if cmd[0] == b'S' {
+                    let _ = stream.write_all(b"Stopped halodiffuse daemon.\n");
+                    break;
+                } else if cmd[0] == b'G' {
+                    let mut u64_buf = [0u8; 8];
+                    let mut u32_buf = [0u8; 4];
+                    stream.read_exact(&mut u64_buf).unwrap();
+                    let mut seed = u64::from_le_bytes(u64_buf);
+                    stream.read_exact(&mut u32_buf).unwrap();
+                    let prompt_len = u32::from_le_bytes(u32_buf) as usize;
+                    let mut prompt_bytes = vec![0u8; prompt_len];
+                    stream.read_exact(&mut prompt_bytes).unwrap();
+                    let prompt = String::from_utf8(prompt_bytes).unwrap();
+                    stream.read_exact(&mut u32_buf).unwrap();
+                    let path_len = u32::from_le_bytes(u32_buf) as usize;
+                    let mut path_bytes = vec![0u8; path_len];
+                    stream.read_exact(&mut path_bytes).unwrap();
+                    let out_path = PathBuf::from(String::from_utf8(path_bytes).unwrap());
+                    let (clip_l_bytes, eos_l) = encode_clip_tokens(&tok_l, &prompt, 49407);
+                    let (clip_g_bytes, eos_g) = encode_clip_tokens(&tok_g, &prompt, 0);
+                    let t5_bytes = encode_t5_tokens(&tok_t5, &prompt);
+                    buf_tokens_l.write().unwrap().copy_from_slice(&clip_l_bytes);
+                    buf_tokens_g.write().unwrap().copy_from_slice(&clip_g_bytes);
+                    buf_tokens_t5.write().unwrap().copy_from_slice(&t5_bytes);
+                    {
+                        let mut guard = latents_x.write().unwrap();
+                        let mut next_u64 = || {
+                            seed = seed.wrapping_add(0x9E3779B97F4A7C15);
+                            let mut z = seed;
+                            z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+                            z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+                            z ^ (z >> 31)
+                        };
+                        for chunk in guard.chunks_exact_mut(4) {
+                            let u1 = ((next_u64() >> 11) as f64 + 0.5) / ((1u64 << 53) as f64);
+                            let u2 = ((next_u64() >> 11) as f64) / ((1u64 << 53) as f64);
+                            let r = (-2.0 * u1.ln()).sqrt();
+                            let theta = 2.0 * std::f64::consts::PI * u2;
+                            let b0 = ((r * theta.cos()) as f16).to_le_bytes();
+                            let b1 = ((r * theta.sin()) as f16).to_le_bytes();
+                            chunk[0] = b0[0];
+                            chunk[1] = b0[1];
+                            chunk[2] = b1[0];
+                            chunk[3] = b1[1];
+                        }
+                    }
+                    let t_start = Instant::now();
+                    {
+                        let mut cmd = engine.new_cmd();
+                        let y_l_slice = y_pooled.clone().slice(0..(768 * 2));
+                        let y_g_slice = y_pooled.clone().slice((768 * 2)..(2048 * 2));
+                        engine.record_clip(
+                            &mut cmd,
+                            &w_clip_l,
+                            &buf_tokens_l,
+                            eos_l,
+                            768,
+                            12,
+                            &clip_l_seq,
+                            &y_l_slice,
+                        );
+                        engine.record_clip(
+                            &mut cmd,
+                            &w_clip_g,
+                            &buf_tokens_g,
+                            eos_g,
+                            1280,
+                            32,
+                            &clip_g_seq,
+                            &y_g_slice,
+                        );
+                        let ctx_clip_slice = ctx_333.clone().slice(0..(77 * 4096 * 2));
+                        engine.dispatch(
+                            &mut cmd,
+                            "clip_concat_pad_m77_d4096.comp",
+                            [77, 1, 1],
+                            &[clip_l_seq.clone(), clip_g_seq.clone(), ctx_clip_slice],
+                            None,
+                        );
+                        engine.submit_and_wait(cmd);
+                        let mut cmd_t5 = engine.new_cmd();
+                        let ctx_t5_slice = ctx_333.clone().slice((77 * 4096 * 2)..(333 * 4096 * 2));
+                        engine.record_t5(&mut cmd_t5, &w_t5, &buf_tokens_t5, &ctx_t5_slice);
+                        engine.submit_and_wait(cmd_t5);
+                    }
+                    for step in 0..4 {
+                        let euler_nchw = if step == 3 { Some(&latents_nchw) } else { None };
+                        engine.run_mmdit_step(
+                            &mmdit_ws,
+                            &w_mmdit,
+                            &latents_x,
+                            &ctx_333,
+                            &y_pooled,
+                            &t_buffers[step],
+                            &v_pred,
+                            euler_nchw,
+                            dts[step],
+                        );
+                    }
+                    engine.run_vae(&w_vae, &latents_nchw, &rgb_out);
+                    let rgb_bytes = rgb_out.read().unwrap();
+                    write_png_rgb8(&out_path, 1024, 1024, &rgb_bytes);
+                    let msg = format!(
+                        "Generated {} in {:.2?}\n",
+                        out_path.display(),
+                        t_start.elapsed()
+                    );
+                    let _ = stream.write_all(msg.as_bytes());
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(_) => break,
+        }
     }
-    for step in 0..4 {
-        let euler_nchw = if step == 3 { Some(&latents_nchw) } else { None };
-        engine.run_mmdit_step(
-            &mmdit_ws,
-            &w_mmdit,
-            &latents_x,
-            &ctx_333,
-            &y_pooled,
-            &t_buffers[step],
-            &v_pred,
-            euler_nchw,
-            dts[step],
+    let _ = fs::remove_file(&sock_path);
+    let _ = fs::remove_file(&pid_path);
+}
+
+fn main() {
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.is_empty() {
+        eprintln!(
+            "Usage:\n  halodiffuse start\n  halodiffuse stop\n  halodiffuse --prompt <TEXT> --path <FILE> [--seed <U64>]"
         );
+        std::process::exit(1);
     }
-    engine.run_vae(&w_vae, &latents_nchw, &rgb_out);
-    let rgb_bytes = rgb_out.read().unwrap();
-    write_png_rgb8(&out_path, 1024, 1024, &rgb_bytes);
-    println!(
-        "Generated {} in {:.2?}",
-        out_path.display(),
-        t_start.elapsed()
-    );
+    let sock_path = get_sock_path();
+    let pid_path = get_pid_path();
+    match args[0].as_str() {
+        "__daemon" => {
+            run_daemon();
+        }
+        "start" => {
+            if UnixStream::connect(&sock_path).is_ok() {
+                println!("halodiffuse is already running.");
+                return;
+            }
+            let _ = fs::remove_file(&sock_path);
+            let _ = fs::remove_file(&pid_path);
+            let child = Command::new(env::current_exe().unwrap())
+                .arg("__daemon")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .unwrap();
+            println!(
+                "Starting halodiffuse daemon (PID {}), loading weights...",
+                child.id()
+            );
+            while !sock_path.exists() {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            println!("halodiffuse started and ready.");
+        }
+        "stop" => {
+            let mut stopped = false;
+            if let Ok(mut stream) = UnixStream::connect(&sock_path) {
+                let _ = stream.write_all(b"S");
+                let mut resp = String::new();
+                let _ = stream.read_to_string(&mut resp);
+                if !resp.is_empty() {
+                    print!("{resp}");
+                }
+                stopped = true;
+            } else if let Ok(pid_str) = fs::read_to_string(&pid_path) {
+                if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                    unsafe {
+                        unsafe extern "C" {
+                            fn kill(pid: i32, sig: i32) -> i32;
+                        }
+                        if kill(pid, 15) == 0 {
+                            println!("Stopped halodiffuse daemon (PID {pid}).");
+                            stopped = true;
+                        }
+                    }
+                }
+            }
+            let _ = fs::remove_file(&sock_path);
+            let _ = fs::remove_file(&pid_path);
+            if !stopped {
+                eprintln!("halodiffuse is not running.");
+                std::process::exit(1);
+            }
+        }
+        _ => {
+            let mut prompt: Option<String> = None;
+            let mut out_path: Option<PathBuf> = None;
+            let mut seed: Option<u64> = None;
+            let mut i = 0;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--prompt" | "—prompt" => {
+                        i += 1;
+                        prompt = args.get(i).cloned();
+                    }
+                    "--path" | "—path" => {
+                        i += 1;
+                        out_path = args.get(i).map(PathBuf::from);
+                    }
+                    "--seed" | "—seed" => {
+                        i += 1;
+                        seed = Some(
+                            args.get(i)
+                                .expect("Missing value for --seed")
+                                .parse::<u64>()
+                                .expect("Invalid u64 for --seed"),
+                        );
+                    }
+                    other => {
+                        eprintln!("Unknown argument: {other}");
+                        std::process::exit(1);
+                    }
+                }
+                i += 1;
+            }
+            let prompt = prompt.expect("Missing required --prompt <TEXT>");
+            let out_path = out_path.expect("Missing required --path <FILE>");
+            if out_path.is_dir() {
+                eprintln!("Error: --path must be a file path, not a directory.");
+                std::process::exit(1);
+            }
+            let abs_out_path = if out_path.is_absolute() {
+                out_path
+            } else {
+                env::current_dir().unwrap().join(out_path)
+            };
+            let seed = seed.unwrap_or_else(read_urandom_u64);
+            let mut stream = UnixStream::connect(&sock_path).unwrap_or_else(|_| {
+                eprintln!("halodiffuse daemon is not running. Start it with: halodiffuse start");
+                std::process::exit(1);
+            });
+            let prompt_bytes = prompt.as_bytes();
+            let path_str = abs_out_path.to_str().unwrap();
+            let path_bytes = path_str.as_bytes();
+            stream.write_all(b"G").unwrap();
+            stream.write_all(&seed.to_le_bytes()).unwrap();
+            stream
+                .write_all(&(prompt_bytes.len() as u32).to_le_bytes())
+                .unwrap();
+            stream.write_all(prompt_bytes).unwrap();
+            stream
+                .write_all(&(path_bytes.len() as u32).to_le_bytes())
+                .unwrap();
+            stream.write_all(path_bytes).unwrap();
+            stream.flush().unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut resp = String::new();
+            reader.read_line(&mut resp).unwrap();
+            print!("{resp}");
+        }
+    }
 }
