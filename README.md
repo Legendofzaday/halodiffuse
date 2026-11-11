@@ -12,10 +12,9 @@
 ### Usage
 
 ```bash
-# Save to a specific file path
-halodiffuse "orange cat" ~/tmp/cat.png
-# Or pass a directory (automatically saves to ~/Pictures/output.png)
-halodiffuse "orange cat" ~/Pictures
+halodiffuse start
+halodiffuse --prompt "cat" --path ~/Pictures/cat.png --seed 42
+halodiffuse stop
 ```
 
 ## Installation
@@ -27,7 +26,7 @@ chmod +x halodiffuse
 sudo mv halodiffuse /usr/local/bin/
 pip install torch safetensors huggingface_hub
 hf auth login
-python install.py # Optional parameters see help
+python install.py # Optional parameters to force or use existing weights see help
 ```
 
 ## Benchmarks
@@ -36,7 +35,7 @@ Stable Diffusion 3.5 Large Turbo FP16 1024x1024 Batch Size 1
 
 | Engine                    | Backend      | Precision   | End-to-End     | Runtime                   |
 | :------------------------ | :----------- | :---------- | :------------- | :------------------------ |
-| **`halodiffuse`**         | **`Vulkan`** | **`FP16`**  | **`5.3 s`**    | **`~15.5 MB binary`**     |
+| **`halodiffuse`**         | **`Vulkan`** | **`FP16`**  | **`5.3 s`**    | **`~15.6 MB binary`**     |
 | **ComfyUI**               | ROCm         | BF16 / FP16 | ~11.8 – 14.5 s | ~18 GB Python + ROCm venv |
 | **stable-diffusion.cpp**  | Vulkan       | FP16        | ~13.5 – 16.2 s | ~50 MB binary             |
 | **HuggingFace Diffusers** | ROCm         | BF16 / FP16 | ~18.4 s+       | ~18 GB Python + ROCm venv |
