@@ -1,5 +1,4 @@
 #version 460
-
 #extension GL_EXT_control_flow_attributes : require
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
@@ -8,30 +7,23 @@
 #extension GL_KHR_memory_scope_semantics : require
 #extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_shuffle : require
-
 const uint TILE_M = 16;
 const uint TILE_N = 16;
 const uint TILE_K = 16;
-
 #define MatA coopmat<float16_t, gl_ScopeSubgroup, TILE_M, TILE_K, gl_MatrixUseB>
 #define MatB coopmat<float16_t, gl_ScopeSubgroup, TILE_K, TILE_N, gl_MatrixUseA>
 #define MatAcc                                                                 \
   coopmat<float, gl_ScopeSubgroup, TILE_M, TILE_N, gl_MatrixUseAccumulator>
-
 layout(local_size_x = 160, local_size_y = 1, local_size_z = 1) in;
-
 layout(std430, set = 0, binding = 0) readonly restrict buffer QKV {
   f16vec4 buffer_qkv[];
 };
-
 layout(std430, set = 0, binding = 1) writeonly restrict buffer Out {
   f16vec4 buffer_out[];
 };
-
 shared f16vec4 q_lds[80][16];
 shared f16vec4 k_lds[16][16];
 shared f16vec4 v_lds[64][16];
-
 void main() {
   const uint tid = gl_LocalInvocationID.x;
   const uint wave_id = tid >> 5u;
@@ -250,8 +242,7 @@ void main() {
   const uint out_r = q_global_row_base + lane_mod16;
   if (out_r < 77u) {
     const float inv_sum = 1.0f / row_sum;
-    const uint out_row_base =
-        320u * out_r + head_v4_off + (lane_half << 1u);
+    const uint out_row_base = 320u * out_r + head_v4_off + (lane_half << 1u);
     [[unroll]] for (uint l = 0u; l < 4u; ++l) {
       const uint col_vec4_idx = out_row_base + (l << 2u);
       const MatAcc acc = o_frag[l];

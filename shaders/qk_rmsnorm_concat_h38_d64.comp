@@ -1,42 +1,32 @@
 #version 460
-
 #extension GL_EXT_control_flow_attributes : require
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 #extension GL_KHR_memory_scope_semantics : require
 #extension GL_KHR_shader_subgroup_basic : require
 #extension GL_KHR_shader_subgroup_shuffle : require
-
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
-
 layout(std430, set = 0, binding = 0) readonly restrict buffer XQKV {
   f16vec4 buffer_x_qkv[];
 };
-
 layout(std430, set = 0, binding = 1) readonly restrict buffer CtxQKV {
   f16vec4 buffer_ctx_qkv[];
 };
-
 layout(std430, set = 0, binding = 2) readonly restrict buffer GammaXQ {
   f16vec4 gamma_x_q[];
 };
-
 layout(std430, set = 0, binding = 3) readonly restrict buffer GammaXK {
   f16vec4 gamma_x_k[];
 };
-
 layout(std430, set = 0, binding = 4) readonly restrict buffer GammaCtxQ {
   f16vec4 gamma_ctx_q[];
 };
-
 layout(std430, set = 0, binding = 5) readonly restrict buffer GammaCtxK {
   f16vec4 gamma_ctx_k[];
 };
-
 layout(std430, set = 0, binding = 6) writeonly restrict buffer QKOut {
   f16vec4 buffer_qk_out[];
 };
-
 f16vec4 rmsnorm_head_d64(const f16vec4 val_f16, const f16vec4 gamma_f16) {
   const vec4 d = vec4(val_f16);
   const vec4 g = vec4(gamma_f16);
@@ -51,7 +41,6 @@ f16vec4 rmsnorm_head_d64(const f16vec4 val_f16, const f16vec4 gamma_f16) {
   const float rstd = inversesqrt(fma(sum_sq, 0.015625f, 1e-6f));
   return f16vec4(d * rstd * g);
 }
-
 void main() {
   const uint tid = gl_LocalInvocationID.x;
   const uint wgid = gl_WorkGroupID.x;

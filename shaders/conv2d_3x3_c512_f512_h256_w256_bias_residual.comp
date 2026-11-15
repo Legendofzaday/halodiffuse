@@ -1,39 +1,29 @@
 #version 460
-
 #extension GL_EXT_control_flow_attributes : require
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 #extension GL_KHR_cooperative_matrix : require
 #extension GL_KHR_memory_scope_semantics : require
-
 const uint TILE_M = 16;
 const uint TILE_N = 16;
 const uint TILE_K = 16;
-
 #define MatA coopmat<float16_t, gl_ScopeSubgroup, TILE_M, TILE_K, gl_MatrixUseB>
 #define MatB coopmat<float16_t, gl_ScopeSubgroup, TILE_K, TILE_N, gl_MatrixUseA>
 #define MatAcc                                                                 \
   coopmat<float, gl_ScopeSubgroup, TILE_M, TILE_N, gl_MatrixUseAccumulator>
-
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
-
 layout(std430, set = 0, binding = 0) readonly restrict buffer A {
   f16vec4 buffer_a[];
 };
-
 layout(std430, set = 0, binding = 1) readonly restrict buffer B {
   f16vec4 buffer_b[];
 };
-
 layout(std430, set = 0, binding = 2) readonly restrict buffer Bias {
   f16vec4 buffer_bias[];
 };
-
 layout(std430, set = 0, binding = 3) restrict buffer C { f16vec4 buffer_c[]; };
-
 shared f16vec4 a_lds[128][32];
 shared f16vec4 b_lds[128][32];
-
 void main() {
   const uint tid = gl_LocalInvocationID.x;
   const uint block_m = gl_WorkGroupID.y;
@@ -53,8 +43,7 @@ void main() {
     const int x_in = int(x) - 1;
     const bool valid = (y_in >= 0 && y_in < 256 && x_in >= 0 && x_in < 256 &&
                         m_global < 65536u);
-    const uint base_off =
-        valid ? ((uint(y_in) << 8u) + uint(x_in) << 7u) : 0u;
+    const uint base_off = valid ? ((uint(y_in) << 8u) + uint(x_in) << 7u) : 0u;
     a_lds[r][c_swz] = valid ? buffer_a[base_off + col_v4] : f16vec4(0.0hf);
     a_lds[r][c_swz + 1u] =
         valid ? buffer_a[base_off + col_v4 + 1u] : f16vec4(0.0hf);
