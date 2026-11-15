@@ -16,3 +16,6 @@ strip = true
 [dependencies]
 vulkano = { version = "0.35.2", default-features = false, features = ["macros"] }
 tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
+
+[build-dependencies]
+hf-hub = { version = "1.0", features = ["blocking"] }

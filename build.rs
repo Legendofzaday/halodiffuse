@@ -1,63 +1,52 @@
-use std::{
-    env::var,
-    fs::read_dir,
-    path::PathBuf,
-    process::{Child, Command},
-};
+use hf_hub::HFClientSync;
+use std::{env, fs, path::PathBuf, process::Command};
+
+const TOKENIZERS: &[(&str, &str, &str)] = &[
+    ("tokenizer_l.json", "openai", "clip-vit-large-patch14"),
+    (
+        "tokenizer_g.json",
+        "laion",
+        "CLIP-ViT-bigG-14-laion2B-39B-b160k",
+    ),
+    ("tokenizer_t5.json", "google", "flan-t5-xxl"),
+];
 
 fn main() {
-    println!("cargo:rerun-if-changed=shaders");
-    let out_dir = PathBuf::from(var("OUT_DIR").unwrap());
-    let collected: Vec<Child> = read_dir("shaders")
-        .unwrap()
-        .filter_map(|entry| {
-            let path = entry.unwrap().path();
-            if path.extension().and_then(|s| s.to_str()) != Some("comp") {
-                return None;
-            }
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let shaders_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shaders");
+    let glslc = env::var("GLSLC_PATH").unwrap_or_else(|_| "glslc".into());
+    println!("cargo:rerun-if-changed={}", shaders_dir.display());
+    println!("cargo:rerun-if-env-changed=GLSLC_PATH");
+    for entry in fs::read_dir(&shaders_dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "comp") {
             println!("cargo:rerun-if-changed={}", path.display());
-            Some(
-                Command::new("glslc")
-                    .arg(&path)
-                    .arg("-o")
-                    .arg(
-                        out_dir
-                            .join(path.file_name().unwrap())
-                            .with_extension("spv"),
-                    )
-                    .args(["-O", "--target-env=vulkan1.3"])
-                    .spawn()
-                    .unwrap(),
-            )
-        })
-        .collect();
-    for mut child in collected {
-        assert!(child.wait().unwrap().success());
-    }
-    for (file, url) in [
-        (
-            "tokenizer_l.json",
-            "https://huggingface.co/openai/clip-vit-large-patch14/resolve/main/tokenizer.json",
-        ),
-        (
-            "tokenizer_g.json",
-            "https://huggingface.co/laion/CLIP-ViT-bigG-14-laion2B-39B-b160k/resolve/main/tokenizer.json",
-        ),
-        (
-            "tokenizer_t5.json",
-            "https://huggingface.co/google/flan-t5-xxl/resolve/main/tokenizer.json",
-        ),
-    ] {
-        let dst = out_dir.join(file);
-        if dst.metadata().map(|m| m.len() < 1000).unwrap_or(true) {
+            let out = Command::new(&glslc)
+                .arg(&path)
+                .args(["-O", "--target-env=vulkan1.3", "-o"])
+                .arg(
+                    out_dir
+                        .join(path.file_stem().unwrap())
+                        .with_extension("spv"),
+                )
+                .output()
+                .unwrap();
             assert!(
-                Command::new("curl")
-                    .args(["-fsSL", url, "-o"])
-                    .arg(&dst)
-                    .status()
-                    .unwrap()
-                    .success()
+                out.status.success(),
+                "{}:\n{}",
+                path.display(),
+                String::from_utf8_lossy(&out.stderr)
             );
         }
+    }
+    let client = HFClientSync::new().unwrap();
+    for &(file, owner, name) in TOKENIZERS {
+        let src = client
+            .model(owner, name)
+            .download_file()
+            .filename("tokenizer.json")
+            .send()
+            .unwrap();
+        fs::copy(src, out_dir.join(file)).unwrap();
     }
 }
