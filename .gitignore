@@ -1,7 +1,7 @@
 *
 !*/
 !.cargo/config.toml
-!assets/cat.png
+!assets/image.png
 !shaders/*.comp
 !src/install.rs
 !src/main.rs

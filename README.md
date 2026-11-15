@@ -1,54 +1,93 @@
 # halodiffuse
 
-[![Radeon Graphics](https://img.shields.io/badge/Ryzen-AI_Max+-F26522.svg?logo=amd&logoSize=auto)](https://www.amd.com/)
+---
+
+[![Ryzen AI Max+](https://img.shields.io/badge/Ryzen-AI_Max+-F26522.svg?logo=amd&logoSize=auto)](https://www.amd.com/)
 [![Radeon Graphics](https://img.shields.io/badge/Radeon-Graphics-ED1C24.svg?logo=amd&logoSize=auto)](https://www.amd.com/)
 [![Rust: Nightly](https://img.shields.io/badge/Rust-Nightly-orange.svg?logo=rust&logoSize=auto)](https://www.rust-lang.org/)
 [![Vulkan: 1.3](https://img.shields.io/badge/Vulkan-1.3-AC162C.svg?logo=vulkan&logoSize=auto)](https://www.vulkan.org/)
 [![License: AGPL v3.0](https://img.shields.io/badge/License-AGPL_v3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Model: SD 3.5 Large Turbo](https://img.shields.io/badge/Model-SD_3.5_Large_Turbo-FFD21E.svg?logo=huggingface)](https://huggingface.co/stabilityai/stable-diffusion-3.5-large-turbo)
 
-## Stable Diffusion 3.5 Large Turbo for Strix Halo
+---
 
-A minimal, ultra-fast Vulkan/Rust inference engine purpose-built for **AMD Strix Halo** (`Ryzen AI Max+ 395`). Features a persistent background daemon that keeps weights resident in unified memory for true **5.3s** per-image generation without Python or ROCm runtime overhead.
+## Quick Start
 
-### Usage
-
-```bash
-# Start the background daemon (loads all 5 weight files into memory once)
+```shell
+# 1. Download and prepare weights into ~/.local/share/halodiffuse
+halodiffuse install
+# 2. Loads weights into memory
 halodiffuse start
-
-# Generate images (instant dispatch against warm weights)
-halodiffuse --prompt "cat" --path ~/Pictures/cat.png --seed 42
-
-# Stop the daemon and free memory
+# 3. Generate 1024x1024 PNG images
+halodiffuse --prompt "A majestic cybernetic owl perched on an obsidian monolith inside a dark volcanic cavern, a blazing ring of amber and crimson plasma hovering like a halo behind its head, intricate brushed copper feathers and glowing optical glass eyes, volumetric mist, dramatic rim lighting, medium format photography, shallow depth of field" --path ~/Pictures/cat.png -seed 42
+# 4. Check weights status or stop to free memory
+halodiffuse status
 halodiffuse stop
 ```
 
-![cat](assets/cat.png)
+![demo image](assets/image.png)
+
+---
+
+## Requirements
+
+- **Hardware:** AMD Ryzen AI Max+ 395 Linux
+- **Model Access:** Accept the [Stability AI Community License](https://huggingface.co/stabilityai/stable-diffusion-3.5-large-turbo) on Hugging Face
+
+---
 
 ## Installation
 
-**Requirements:**
-* **Hardware:** AMD Ryzen AI Max+ 395 (64GB+ unified memory)
-* **OS:** Linux (with Vulkan 1.3 support)
-* **Model Access:** Accepting the [Stability AI Community License](https://huggingface.co/stabilityai/stable-diffusion-3.5-large-turbo) on Hugging Face
+### 1. Install the binary
 
-```bash
-# 1. Install the binary (from Releases or `cargo build --release`)
+```shell
+curl -LO https://github.com/Legendofzaday/halodiffuse/releases/latest/download/halodiffuse
 chmod +x halodiffuse
 sudo mv halodiffuse /usr/local/bin/
-
-# 2. Download and prepare weights
-pip install torch safetensors huggingface_hub
-hf auth login
-python install.py # Optional parameters to force or use existing weights (see --help)
 ```
+
+### 2. Prepare model weights
+
+`stabilityai/stable-diffusion-3.5-large-turbo` is a gated repository, make sure you have accepted its license on [Hugging Face](https://huggingface.co/spaces/stabilityai/stable-diffusion-3.5-large-turbo) and provide a [HF_TOKEN](https://huggingface.co/settings/tokens/new?preset=read-only)
+
+```shell
+# Download from Hugging Face and prepare weights automatically
+HF_TOKEN=hf_your_token_here halodiffuse install
+
+# Or prepare from an existing local model directory
+halodiffuse install --raw-dir /path/to/sd-3.5-large-turbo
+
+# Re-prepare and overwrite existing weight packs
+HF_TOKEN=hf_your_token_here halodiffuse install --force
+```
+
+---
+
+## CLI Reference
+
+```text
+Usage:
+  halodiffuse install [--force] [--raw-dir <DIR> | <DIR>]
+  halodiffuse start
+  halodiffuse stop
+  halodiffuse status
+  halodiffuse --prompt <TEXT> --path <FILE> [--seed <U64>]
+
+Options:
+  -p, --prompt <TEXT>  Text prompt
+  -o, --path <FILE>    Output PNG path (1024x1024 RGB8)
+  -s, --seed <U64>     RNG seed (random if omitted)
+  -h, --help           Show help
+  -V, --version        Show version
+```
+
+---
 
 ## Benchmarks
 
-**Configuration:** Stable Diffusion 3.5 Large Turbo | `FP16` | `1024x1024` | `Batch Size 1` (4 steps)
+**Configuration:** Stable Diffusion 3.5 Large Turbo | `FP16` | `1024x1024` | `Batch Size 1`
 
-> **Methodology:** All engines were benchmarked with models **pre-loaded and warm in memory** to measure true per-image generation time. Using `halodiffuse start` keeps all weights loaded between prompts, making `5.3 s` the actual wall-clock wait per image.
+> All engines were benchmarked with models **pre-loaded and warm in memory** to measure true per-image generation time.
 
 | Engine                    | Backend      | Precision   | End-to-End (Warm) | Runtime                   |
 | :------------------------ | :----------- | :---------- | :---------------- | :------------------------ |
@@ -56,6 +95,8 @@ python install.py # Optional parameters to force or use existing weights (see --
 | **ComfyUI**               | ROCm         | BF16 / FP16 | ~11.8 – 14.5 s    | ~18 GB Python + ROCm venv |
 | **stable-diffusion.cpp**  | Vulkan       | FP16        | ~13.5 – 16.2 s    | ~50 MB binary             |
 | **HuggingFace Diffusers** | ROCm         | BF16 / FP16 | ~18.4 s+          | ~18 GB Python + ROCm venv |
+
+---
 
 ## Code License
 
@@ -72,7 +113,7 @@ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
 GNU Affero General Public License for more details.
 
 You should have received a copy of the GNU Affero General Public License
-along with this program. If not, see <https://www.gnu.org/licenses/>.
+along with this program. If not, see https://www.gnu.org/licenses/.
 
 ## Model License
 
