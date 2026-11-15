@@ -3,11 +3,11 @@
 !.cargo/config.toml
 !assets/cat.png
 !shaders/*.comp
-!src/*.rs
+!src/install.rs
+!src/main.rs
 !.gitattributes
 !.gitignore
 !build.rs
 !Cargo.toml
-!install.py
 !LICENSE
 !README.md

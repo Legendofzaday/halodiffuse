@@ -1,48 +1,46 @@
 #![feature(f16)]
 
-use std::{
-    collections::HashMap,
-    env,
-    fs::{self, File},
-    io::{BufRead, BufReader, Read, Write},
-    os::unix::{
-        fs::FileExt,
-        net::{UnixListener, UnixStream},
-    },
-    path::{Path, PathBuf},
-    process::{Command, Stdio},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::{Duration, Instant},
-};
+mod install;
+
+use std::collections::HashMap;
+use std::env::{args, current_dir, current_exe, var};
+use std::f64::consts::PI;
+use std::fs::{File, create_dir_all, read_to_string, remove_file, write};
+use std::io::{BufRead, BufReader, ErrorKind, Read, Write, stdout};
+use std::mem::swap;
+use std::ops::Range;
+use std::os::unix::fs::FileExt;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio, exit, id};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 use tokenizers::Tokenizer;
-use vulkano::{
-    Version, VulkanLibrary,
-    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
-    command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo, PrimaryAutoCommandBuffer,
-        PrimaryCommandBufferAbstract,
-        allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
-    },
-    descriptor_set::{
-        DescriptorSet, WriteDescriptorSet, allocator::StandardDescriptorSetAllocator,
-    },
-    device::{
-        Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateInfo,
-        QueueFlags,
-    },
-    instance::{Instance, InstanceCreateFlags, InstanceCreateInfo},
-    memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
-    pipeline::{
-        ComputePipeline, Pipeline, PipelineBindPoint, PipelineLayout,
-        PipelineShaderStageCreateInfo, compute::ComputePipelineCreateInfo,
-        layout::PipelineDescriptorSetLayoutCreateInfo,
-    },
-    shader::{ShaderModule, ShaderModuleCreateInfo},
-    sync::GpuFuture,
+use vulkano::buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer};
+use vulkano::command_buffer::allocator::{
+    StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo,
 };
+use vulkano::command_buffer::{
+    AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo, PrimaryAutoCommandBuffer,
+    PrimaryCommandBufferAbstract,
+};
+use vulkano::descriptor_set::allocator::StandardDescriptorSetAllocator;
+use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
+use vulkano::device::{
+    Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateInfo, QueueFlags,
+};
+use vulkano::instance::{Instance, InstanceCreateFlags, InstanceCreateInfo};
+use vulkano::memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator};
+use vulkano::pipeline::compute::ComputePipelineCreateInfo;
+use vulkano::pipeline::layout::PipelineDescriptorSetLayoutCreateInfo;
+use vulkano::pipeline::{
+    ComputePipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo,
+};
+use vulkano::shader::{ShaderModule, ShaderModuleCreateInfo};
+use vulkano::sync::GpuFuture;
+use vulkano::{Version, VulkanLibrary};
 
 #[repr(C)]
 #[derive(Clone, Copy, BufferContents)]
@@ -472,14 +470,13 @@ impl Engine {
         out_seq: &Subbuffer<[u8]>,
         out_pooled: &Subbuffer<[u8]>,
     ) {
-        let is_g = d == 1280;
         let bytes_seq = (77 * d * 2) as u64;
         let x = self.alloc_device_bytes(bytes_seq);
         let norm = self.alloc_device_bytes(bytes_seq);
         let qkv = self.alloc_device_bytes(bytes_seq * 3);
         let attn_out = self.alloc_device_bytes(bytes_seq);
         let mlp_hid = self.alloc_device_bytes(bytes_seq * 4);
-        let (sh_emb, sh_ln, sh_qkv, sh_fa, sh_out, sh_fc1, sh_fc2, sh_eos) = if is_g {
+        let (sh_emb, sh_ln, sh_qkv, sh_fa, sh_out, sh_fc1, sh_fc2, sh_eos) = if d == 1280 {
             (
                 "embed_lookup_pos_v49408_m77_d1280.comp",
                 "layernorm_m77_d1280.comp",
@@ -632,6 +629,7 @@ impl Engine {
         let qkv = self.alloc_device_bytes(bytes_seq * 3);
         let attn_out = self.alloc_device_bytes(bytes_seq);
         let ffn_hid = self.alloc_device_bytes(256 * 10240 * 2);
+        let rpb = w.get("rpb_weight");
         self.dispatch(
             cmd,
             "embed_lookup_v32128_m256_d4096.comp",
@@ -639,7 +637,6 @@ impl Engine {
             &[tokens_buf.clone(), w.get("embed_tokens.weight"), x.clone()],
             None,
         );
-        let rpb = w.get("rpb_weight");
         for i in 0..24 {
             self.dispatch(
                 cmd,
@@ -816,7 +813,7 @@ impl Engine {
             None,
         );
         let record_blocks = |cmd: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-                             range: std::ops::Range<usize>| {
+                             range: Range<usize>| {
             for i in range {
                 let is_last = i == 37;
                 if !is_last {
@@ -1278,7 +1275,7 @@ impl Engine {
             ],
             None,
         );
-        std::mem::swap(&mut x, &mut tmp);
+        swap(&mut x, &mut tmp);
         self.submit_and_wait(cmd);
         let mut cmd = self.new_cmd();
         for r in 0..3 {
@@ -1307,7 +1304,7 @@ impl Engine {
             ],
             None,
         );
-        std::mem::swap(&mut x, &mut tmp);
+        swap(&mut x, &mut tmp);
         self.submit_and_wait(cmd);
         let mut cmd = self.new_cmd();
         self.dispatch(
@@ -1370,7 +1367,7 @@ impl Engine {
             ],
             None,
         );
-        std::mem::swap(&mut x, &mut tmp);
+        swap(&mut x, &mut tmp);
         for r in 1..3 {
             resnet_same(
                 &mut cmd,
@@ -1397,7 +1394,7 @@ impl Engine {
             ],
             None,
         );
-        std::mem::swap(&mut x, &mut tmp);
+        swap(&mut x, &mut tmp);
         self.submit_and_wait(cmd);
         let mut cmd = self.new_cmd();
         self.dispatch(
@@ -1460,7 +1457,7 @@ impl Engine {
             ],
             None,
         );
-        std::mem::swap(&mut x, &mut tmp);
+        swap(&mut x, &mut tmp);
         for r in 1..3 {
             resnet_same(
                 &mut cmd,
@@ -1599,8 +1596,8 @@ extern "C" fn handle_sigterm(_: i32) {
     STOP_FLAG.store(true, Ordering::SeqCst);
 }
 
-fn get_data_dir() -> PathBuf {
-    PathBuf::from(env::var("HOME").unwrap()).join(".local/share/halodiffuse")
+pub(crate) fn get_data_dir() -> PathBuf {
+    PathBuf::from(var("HOME").unwrap()).join(".local/share/halodiffuse")
 }
 
 fn get_sock_path() -> PathBuf {
@@ -1618,18 +1615,38 @@ fn read_urandom_u64() -> u64 {
     u64::from_le_bytes(buf)
 }
 
+fn print_usage() {
+    let bin = env!("CARGO_PKG_NAME");
+    println!(
+        "{bin} {}\n{}\n\n\
+         Usage:\n  \
+           {bin} install [--force] [--raw-dir <DIR> | <DIR>]\n  \
+           {bin} start\n  \
+           {bin} stop\n  \
+           {bin} status\n  \
+           {bin} --prompt <TEXT> --path <FILE> [--seed <U64>]\n\n\
+         Options:\n  \
+           -p, --prompt <TEXT>  Text prompt\n  \
+           -o, --path <FILE>    Output PNG path\n  \
+           -s, --seed <U64>     RNG seed\n  \
+           -h, --help           Show help\n  \
+           -V, --version        Show version",
+        env!("CARGO_PKG_VERSION"),
+        env!("CARGO_PKG_DESCRIPTION")
+    );
+}
+
 fn run_daemon() {
     let data_dir = get_data_dir();
     let sock_path = get_sock_path();
     let pid_path = get_pid_path();
-    let _ = fs::remove_file(&sock_path);
-
+    let _ = remove_file(&sock_path);
     unsafe {
         unsafe extern "C" {
             fn signal(sig: i32, handler: extern "C" fn(i32)) -> usize;
         }
-        signal(15, handle_sigterm); // SIGTERM
-        signal(2, handle_sigterm); // SIGINT
+        signal(15, handle_sigterm);
+        signal(2, handle_sigterm);
     }
     let engine = Engine::new();
     let tok_l = Tokenizer::from_bytes(include_bytes!(concat!(
@@ -1676,7 +1693,7 @@ fn run_daemon() {
     let mmdit_ws = MmditWorkspace::new(&engine);
     let listener = UnixListener::bind(&sock_path).unwrap();
     listener.set_nonblocking(true).unwrap();
-    fs::write(&pid_path, std::process::id().to_string()).unwrap();
+    write(&pid_path, id().to_string()).unwrap();
     while !STOP_FLAG.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((mut stream, _)) => {
@@ -1692,7 +1709,8 @@ fn run_daemon() {
                     let mut u64_buf = [0u8; 8];
                     let mut u32_buf = [0u8; 4];
                     stream.read_exact(&mut u64_buf).unwrap();
-                    let mut seed = u64::from_le_bytes(u64_buf);
+                    let init_seed = u64::from_le_bytes(u64_buf);
+                    let mut seed = init_seed;
                     stream.read_exact(&mut u32_buf).unwrap();
                     let prompt_len = u32::from_le_bytes(u32_buf) as usize;
                     let mut prompt_bytes = vec![0u8; prompt_len];
@@ -1722,7 +1740,7 @@ fn run_daemon() {
                             let u1 = ((next_u64() >> 11) as f64 + 0.5) / ((1u64 << 53) as f64);
                             let u2 = ((next_u64() >> 11) as f64) / ((1u64 << 53) as f64);
                             let r = (-2.0 * u1.ln()).sqrt();
-                            let theta = 2.0 * std::f64::consts::PI * u2;
+                            let theta = 2.0 * PI * u2;
                             let b0 = ((r * theta.cos()) as f16).to_le_bytes();
                             let b1 = ((r * theta.sin()) as f16).to_le_bytes();
                             chunk[0] = b0[0];
@@ -1785,62 +1803,96 @@ fn run_daemon() {
                         );
                     }
                     engine.run_vae(&w_vae, &latents_nchw, &rgb_out);
+                    if let Some(parent) = out_path.parent() {
+                        let _ = create_dir_all(parent);
+                    }
                     let rgb_bytes = rgb_out.read().unwrap();
                     write_png_rgb8(&out_path, 1024, 1024, &rgb_bytes);
                     let msg = format!(
-                        "Generated {} in {:.2?}\n",
+                        "Generated {} (1024x1024, seed {init_seed}) in {:.2}s\n",
                         out_path.display(),
-                        t_start.elapsed()
+                        t_start.elapsed().as_secs_f32()
                     );
                     let _ = stream.write_all(msg.as_bytes());
                 }
             }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(Duration::from_millis(20));
+            Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
+                sleep(Duration::from_millis(20));
             }
             Err(_) => break,
         }
     }
-    let _ = fs::remove_file(&sock_path);
-    let _ = fs::remove_file(&pid_path);
+    let _ = remove_file(&sock_path);
+    let _ = remove_file(&pid_path);
 }
 
 fn main() {
-    let args: Vec<String> = env::args().skip(1).collect();
-    if args.is_empty() {
-        eprintln!(
-            "Usage:\n  halodiffuse start\n  halodiffuse stop\n  halodiffuse --prompt <TEXT> --path <FILE> [--seed <U64>]"
-        );
-        std::process::exit(1);
-    }
+    let args: Vec<String> = args().skip(1).collect();
     let sock_path = get_sock_path();
     let pid_path = get_pid_path();
+    if args.is_empty() {
+        print_usage();
+        exit(1);
+    }
     match args[0].as_str() {
-        "__daemon" => {
-            run_daemon();
+        "-h" | "--help" | "help" => print_usage(),
+        "-V" | "--version" => {
+            println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        }
+        "install" => install::run(&args[1..]),
+        "__daemon" => run_daemon(),
+        "status" => {
+            if UnixStream::connect(&sock_path).is_ok() {
+                let pid = read_to_string(&pid_path).unwrap_or_default();
+                println!("Running (PID {})", pid.trim());
+            } else {
+                println!("Stopped");
+                exit(1);
+            }
         }
         "start" => {
+            let data_dir = get_data_dir();
+            for pack in [
+                "clip_l.safetensors",
+                "clip_g.safetensors",
+                "t5xxl.safetensors",
+                "mmdit.safetensors",
+                "vae.safetensors",
+            ] {
+                if !data_dir.join(pack).exists() {
+                    eprintln!(
+                        "Missing {}. Run `{} install` first.",
+                        data_dir.join(pack).display(),
+                        env!("CARGO_PKG_NAME")
+                    );
+                    exit(1);
+                }
+            }
             if UnixStream::connect(&sock_path).is_ok() {
                 println!("halodiffuse is already running.");
                 return;
             }
-            let _ = fs::remove_file(&sock_path);
-            let _ = fs::remove_file(&pid_path);
-            let child = Command::new(env::current_exe().unwrap())
+            let _ = remove_file(&sock_path);
+            let _ = remove_file(&pid_path);
+            let t0 = Instant::now();
+            let mut child = Command::new(current_exe().unwrap())
                 .arg("__daemon")
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::inherit())
                 .spawn()
                 .unwrap();
-            println!(
-                "Starting halodiffuse daemon (PID {}), loading weights...",
-                child.id()
-            );
+            print!("Starting daemon (PID {})... ", child.id());
+            stdout().flush().unwrap();
             while !sock_path.exists() {
-                std::thread::sleep(Duration::from_millis(100));
+                if let Some(status) = child.try_wait().unwrap() {
+                    println!("failed");
+                    eprintln!("Daemon exited early with status {status}");
+                    exit(1);
+                }
+                sleep(Duration::from_millis(50));
             }
-            println!("halodiffuse started and ready.");
+            println!("ready ({:.2}s)", t0.elapsed().as_secs_f32());
         }
         "stop" => {
             let mut stopped = false;
@@ -1852,24 +1904,24 @@ fn main() {
                     print!("{resp}");
                 }
                 stopped = true;
-            } else if let Ok(pid_str) = fs::read_to_string(&pid_path) {
-                if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                    unsafe {
-                        unsafe extern "C" {
-                            fn kill(pid: i32, sig: i32) -> i32;
-                        }
-                        if kill(pid, 15) == 0 {
-                            println!("Stopped halodiffuse daemon (PID {pid}).");
-                            stopped = true;
-                        }
+            } else if let Ok(pid_str) = read_to_string(&pid_path)
+                && let Ok(pid) = pid_str.trim().parse::<i32>()
+            {
+                unsafe {
+                    unsafe extern "C" {
+                        fn kill(pid: i32, sig: i32) -> i32;
+                    }
+                    if kill(pid, 15) == 0 {
+                        println!("Stopped halodiffuse daemon (PID {pid}).");
+                        stopped = true;
                     }
                 }
             }
-            let _ = fs::remove_file(&sock_path);
-            let _ = fs::remove_file(&pid_path);
+            let _ = remove_file(&sock_path);
+            let _ = remove_file(&pid_path);
             if !stopped {
                 eprintln!("halodiffuse is not running.");
-                std::process::exit(1);
+                exit(1);
             }
         }
         _ => {
@@ -1879,49 +1931,59 @@ fn main() {
             let mut i = 0;
             while i < args.len() {
                 match args[i].as_str() {
-                    "--prompt" | "—prompt" => {
+                    "-p" | "--prompt" | "—prompt" => {
                         i += 1;
                         prompt = args.get(i).cloned();
                     }
-                    "--path" | "—path" => {
+                    "-o" | "--path" | "—path" => {
                         i += 1;
                         out_path = args.get(i).map(PathBuf::from);
                     }
-                    "--seed" | "—seed" => {
+                    "-s" | "--seed" | "—seed" => {
                         i += 1;
-                        seed = Some(
-                            args.get(i)
-                                .expect("Missing value for --seed")
-                                .parse::<u64>()
-                                .expect("Invalid u64 for --seed"),
-                        );
+                        let Some(val) = args.get(i) else {
+                            eprintln!("Error: missing value for --seed");
+                            exit(1);
+                        };
+                        seed = Some(val.parse().unwrap_or_else(|_| {
+                            eprintln!("Error: invalid u64 `{val}` for --seed");
+                            exit(1);
+                        }));
                     }
                     other => {
-                        eprintln!("Unknown argument: {other}");
-                        std::process::exit(1);
+                        eprintln!("Error: unknown argument `{other}`");
+                        exit(1);
                     }
                 }
                 i += 1;
             }
-            let prompt = prompt.expect("Missing required --prompt <TEXT>");
-            let out_path = out_path.expect("Missing required --path <FILE>");
+            let Some(prompt) = prompt else {
+                eprintln!("Error: missing required --prompt <TEXT>");
+                exit(1);
+            };
+            let Some(out_path) = out_path else {
+                eprintln!("Error: missing required --path <FILE>");
+                exit(1);
+            };
             if out_path.is_dir() {
                 eprintln!("Error: --path must be a file path, not a directory.");
-                std::process::exit(1);
+                exit(1);
             }
             let abs_out_path = if out_path.is_absolute() {
                 out_path
             } else {
-                env::current_dir().unwrap().join(out_path)
+                current_dir().unwrap().join(out_path)
             };
             let seed = seed.unwrap_or_else(read_urandom_u64);
             let mut stream = UnixStream::connect(&sock_path).unwrap_or_else(|_| {
-                eprintln!("halodiffuse daemon is not running. Start it with: halodiffuse start");
-                std::process::exit(1);
+                eprintln!(
+                    "halodiffuse daemon is not running. Start it with: {} start",
+                    env!("CARGO_PKG_NAME")
+                );
+                exit(1);
             });
             let prompt_bytes = prompt.as_bytes();
-            let path_str = abs_out_path.to_str().unwrap();
-            let path_bytes = path_str.as_bytes();
+            let path_bytes = abs_out_path.to_str().unwrap().as_bytes();
             stream.write_all(b"G").unwrap();
             stream.write_all(&seed.to_le_bytes()).unwrap();
             stream
