@@ -1,0 +1,30 @@
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["shaders/*.comp"]
+  pull_request:
+    paths: ["shaders/*.comp"]
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - run: sudo apt-get update && sudo apt-get install -y clang-format
+
+      - run: |
+          find shaders -type f -print0 | while IFS= read -r -d '' file; do
+            clang-format -i "$file"
+            perl -0777 -i -pe 's/\n{2,}/\n/g' "$file"
+          done
+
+      - uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "style: format shaders"

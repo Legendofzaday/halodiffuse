@@ -1,6 +1,7 @@
 *
 !*/
 !.cargo/config.toml
+!.github/workflows/shaderfmt.yml
 !assets/image.png
 !shaders/*.comp
 !src/install.rs
