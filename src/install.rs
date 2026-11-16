@@ -1,10 +1,9 @@
 use hf_hub::HFClientSync;
-use memmap2::{Mmap, MmapOptions};
 use rayon::prelude::*;
 use safetensors::Dtype;
 use safetensors::tensor::{SafeTensors, TensorView, serialize_to_file};
 use std::collections::BTreeMap;
-use std::fs::{File, create_dir_all, rename};
+use std::fs::{create_dir_all, read, rename};
 use std::io::{Write, stdout};
 use std::path::{Path, PathBuf};
 use std::process::exit;
@@ -21,9 +20,9 @@ struct RawFile<'a> {
 }
 
 impl<'a> RawFile<'a> {
-    fn from_mmap(mmap: &'a Mmap) -> Self {
+    fn from_bytes(bytes: &'a [u8]) -> Self {
         Self {
-            st: SafeTensors::deserialize(mmap).unwrap(),
+            st: SafeTensors::deserialize(bytes).unwrap(),
         }
     }
 
@@ -37,15 +36,15 @@ impl<'a> RawFile<'a> {
         let raw = view.data();
         let vals = match view.dtype() {
             Dtype::F32 => raw
-                .chunks_exact(4)
+                .par_chunks_exact(4)
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect(),
             Dtype::F16 => raw
-                .chunks_exact(2)
+                .par_chunks_exact(2)
                 .map(|c| f16::from_le_bytes([c[0], c[1]]) as f32)
                 .collect(),
             Dtype::BF16 => raw
-                .chunks_exact(2)
+                .par_chunks_exact(2)
                 .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
                 .collect(),
             other => panic!("unsupported dtype {other:?} for {key}"),
@@ -54,16 +53,15 @@ impl<'a> RawFile<'a> {
     }
 }
 
-fn open_mmap(path: &Path) -> Mmap {
-    let file = File::open(path).unwrap();
-    unsafe { MmapOptions::new().map(&file) }.unwrap()
-}
-
 fn f32_to_f16_bytes(vals: &[f32]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(vals.len() * 2);
-    for &v in vals {
-        out.extend_from_slice(&(v.clamp(-65504.0, 65504.0) as f16).to_le_bytes());
-    }
+    let mut out = vec![0u8; vals.len() * 2];
+    out.par_chunks_exact_mut(2)
+        .zip(vals.par_iter())
+        .for_each(|(dst, &v)| {
+            let bytes = (v.clamp(-65504.0, 65504.0) as f16).to_le_bytes();
+            dst[0] = bytes[0];
+            dst[1] = bytes[1];
+        });
     out
 }
 
@@ -73,12 +71,13 @@ fn insert_f16(out: &mut PackedMap, key: impl Into<String>, shape: Vec<usize>, va
 
 fn transpose_2d(src: &[f32], rows: usize, cols: usize) -> Vec<f32> {
     let mut dst = vec![0.0f32; rows * cols];
-    for r in 0..rows {
-        let row = &src[r * cols..(r + 1) * cols];
-        for c in 0..cols {
-            dst[c * rows + r] = row[c];
-        }
-    }
+    dst.par_chunks_exact_mut(rows)
+        .enumerate()
+        .for_each(|(c, dst_row)| {
+            for r in 0..rows {
+                dst_row[r] = src[r * cols + c];
+            }
+        });
     dst
 }
 
@@ -87,22 +86,26 @@ fn pack_b_tiles_16x16(b_logical: &[f32], k: usize, n: usize) -> Vec<u8> {
     let kt_max = k / 16;
     let nt_max = n / 16;
     let mut packed = vec![0u8; k * n * 2];
-    for kt in 0..kt_max {
-        for n_in in 0..16 {
-            let nc = PERM_N[n_in];
-            for nt in 0..nt_max {
-                let col = nt * 16 + nc;
-                let dst_base = (((kt * 16 + n_in) * nt_max + nt) * 16) * 2;
-                for kr in 0..16 {
-                    let row = kt * 16 + kr;
-                    let v = b_logical[row * n + col].clamp(-65504.0, 65504.0);
-                    let bytes = (v as f16).to_le_bytes();
-                    packed[dst_base + kr * 2] = bytes[0];
-                    packed[dst_base + kr * 2 + 1] = bytes[1];
+    let kt_stride = 16 * nt_max * 16 * 2;
+    packed
+        .par_chunks_exact_mut(kt_stride)
+        .enumerate()
+        .for_each(|(kt, kt_slice)| {
+            for n_in in 0..16 {
+                let nc = PERM_N[n_in];
+                for nt in 0..nt_max {
+                    let col = nt * 16 + nc;
+                    let dst_base = (n_in * nt_max + nt) * 16 * 2;
+                    for kr in 0..16 {
+                        let row = kt * 16 + kr;
+                        let v = b_logical[row * n + col].clamp(-65504.0, 65504.0);
+                        let bytes = (v as f16).to_le_bytes();
+                        kt_slice[dst_base + kr * 2] = bytes[0];
+                        kt_slice[dst_base + kr * 2 + 1] = bytes[1];
+                    }
                 }
             }
-        }
-    }
+        });
     packed
 }
 
@@ -135,8 +138,8 @@ fn find_key(raw: &RawFile<'_>, prefixes: &[&str], suffix: &str) -> String {
 }
 
 fn convert_clip(input_path: &Path, output_path: &Path, d_model: usize, num_layers: usize) {
-    let mmap = open_mmap(input_path);
-    let raw = RawFile::from_mmap(&mmap);
+    let raw_bytes = read(input_path).unwrap();
+    let raw = RawFile::from_bytes(&raw_bytes);
     let pfx = [
         "text_encoders.clip_l.transformer.",
         "text_encoders.clip_g.transformer.",
@@ -253,14 +256,15 @@ fn convert_clip(input_path: &Path, output_path: &Path, d_model: usize, num_layer
 
 fn rmsnorm_fp16(x: &[f16], gamma: &[f16], rows: usize, cols: usize) -> Vec<f16> {
     let mut out = vec![0.0f16; rows * cols];
-    for r in 0..rows {
-        let row = &x[r * cols..(r + 1) * cols];
-        let sq_sum: f32 = row.iter().map(|&v| (v as f32) * (v as f32)).sum();
-        let rstd = 1.0 / (sq_sum / cols as f32 + 1e-6).sqrt();
-        for c in 0..cols {
-            out[r * cols + c] = ((row[c] as f32) * rstd * (gamma[c] as f32)) as f16;
-        }
-    }
+    out.par_chunks_exact_mut(cols)
+        .zip(x.par_chunks_exact(cols))
+        .for_each(|(out_row, row)| {
+            let sq_sum: f32 = row.iter().map(|&v| (v as f32) * (v as f32)).sum();
+            let rstd = 1.0 / (sq_sum / cols as f32 + 1e-6).sqrt();
+            for c in 0..cols {
+                out_row[c] = ((row[c] as f32) * rstd * (gamma[c] as f32)) as f16;
+            }
+        });
     out
 }
 
@@ -281,8 +285,8 @@ fn matmul_nt_f16_in(a: &[f16], b_nk: &[f32], m: usize, n: usize, k: usize) -> Ve
 }
 
 fn convert_t5(input_path: &Path, output_path: &Path) {
-    let mmap = open_mmap(input_path);
-    let raw = RawFile::from_mmap(&mmap);
+    let raw_bytes = read(input_path).unwrap();
+    let raw = RawFile::from_bytes(&raw_bytes);
     let mut out = PackedMap::new();
     let emb_key = if raw.has("shared.weight") {
         "shared.weight"
@@ -490,8 +494,8 @@ fn fold_adaln_bias_2(bias: &mut [f32]) {
 }
 
 fn convert_mmdit(input_path: &Path, output_path: &Path) {
-    let mmap = open_mmap(input_path);
-    let raw = RawFile::from_mmap(&mmap);
+    let raw_bytes = read(input_path).unwrap();
+    let raw = RawFile::from_bytes(&raw_bytes);
     let pfx = ["model.diffusion_model.", ""];
     let mut out = PackedMap::new();
     for (dst, src, k, n) in [
@@ -734,8 +738,8 @@ fn convert_mmdit(input_path: &Path, output_path: &Path) {
 }
 
 fn convert_vae(input_path: &Path, output_path: &Path) {
-    let mmap = open_mmap(input_path);
-    let raw = RawFile::from_mmap(&mmap);
+    let raw_bytes = read(input_path).unwrap();
+    let raw = RawFile::from_bytes(&raw_bytes);
     let pfx = ["first_stage_model.", ""];
     let is_diffusers = pfx
         .iter()

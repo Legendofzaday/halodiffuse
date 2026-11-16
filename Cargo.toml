@@ -17,9 +17,10 @@ strip = true
 vulkano = { version = "0.35.2", default-features = false, features = ["macros"] }
 tokenizers = { version = "0.23.2", default-features = false, features = ["onig"] }
 hf-hub = { version = "1.0", features = ["blocking"] }
-memmap2 = "0.9.12"
 rayon = "1.12.0"
 safetensors = "0.8.0"
+png = "0.18.1"
+libc = "0.2.191"
 
 [build-dependencies]
 hf-hub = { version = "1.0", features = ["blocking"] }
