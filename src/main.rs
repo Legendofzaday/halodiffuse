@@ -165,15 +165,6 @@ impl WeightPack {
     }
 }
 
-/// Persistent 1.5 GiB DEVICE_LOCAL scratch pool shared across sequential pipeline stages.
-///
-/// Safety & Lifetime Contract:
-/// `TextEncoderWorkspace`, `MmditWorkspace`, and `VaeWorkspace` intentionally alias `arena_a`
-/// starting at offset 0. Callers MUST execute and fence-wait these stages strictly sequentially:
-/// 1. Stage 1 (`run_stage1_text_and_noise`) -> fence wait
-/// 2. Stage 2 (`mmdit_cmds[0..4]`) -> fence wait
-/// 3. Stage 3 (`vae_cmd`) -> fence wait
-/// Overlapping submissions across stages will corrupt intermediate activations.
 struct DeviceScratchArena {
     arena_a: Subbuffer<[u8]>,
     arena_b: Subbuffer<[u8]>,
@@ -229,8 +220,6 @@ struct ClipScratch {
     mlp_hid: Subbuffer<[u8]>,
 }
 
-/// Sub-allocates CLIP-L, CLIP-G, and T5-XXL activations from `arena_a[0..]`.
-/// Valid only during Stage 1 before MMDiT or VAE submissions begin.
 struct TextEncoderWorkspace {
     clip_l: ClipScratch,
     clip_g: ClipScratch,
@@ -269,8 +258,6 @@ impl TextEncoderWorkspace {
     }
 }
 
-/// Sub-allocates MMDiT activations from `arena_a[0..]`, aliasing `TextEncoderWorkspace`.
-/// Valid only during Stage 2 after Stage 1 completes and before Stage 3 begins.
 struct MmditWorkspace {
     t_silu: Subbuffer<[u8]>,
     t_out: Subbuffer<[u8]>,
@@ -315,8 +302,6 @@ impl MmditWorkspace {
     }
 }
 
-/// Uses full `arena_a`, `arena_b`, `arena_c` buffers for VAE decode, aliasing prior stages.
-/// Valid only during Stage 3 after all MMDiT steps have completed.
 struct VaeWorkspace {
     x: Subbuffer<[u8]>,
     norm: Subbuffer<[u8]>,
