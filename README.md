@@ -59,6 +59,8 @@ halodiffuse install --raw-dir /path/to/sd-3.5-large-turbo
 
 # Re-prepare and overwrite existing weight packs
 HF_TOKEN=hf_your_token_here halodiffuse install --force
+
+# Note: amdgpu.lockup_timeout is recommended to be increased and for optimal performance run in tty.
 ```
 
 ---
