@@ -50,9 +50,9 @@ struct EulerPushConstants {
 #[repr(C)]
 #[derive(Clone, Copy, BufferContents)]
 struct NoisePushConstants {
-    seed_lo: u32,
-    seed_hi: u32,
+    seed: u64,
     num_pairs: u32,
+    _pad: u32,
 }
 
 macro_rules! include_spv {
@@ -165,6 +165,15 @@ impl WeightPack {
     }
 }
 
+/// Persistent 1.5 GiB DEVICE_LOCAL scratch pool shared across sequential pipeline stages.
+///
+/// Safety & Lifetime Contract:
+/// `TextEncoderWorkspace`, `MmditWorkspace`, and `VaeWorkspace` intentionally alias `arena_a`
+/// starting at offset 0. Callers MUST execute and fence-wait these stages strictly sequentially:
+/// 1. Stage 1 (`run_stage1_text_and_noise`) -> fence wait
+/// 2. Stage 2 (`mmdit_cmds[0..4]`) -> fence wait
+/// 3. Stage 3 (`vae_cmd`) -> fence wait
+/// Overlapping submissions across stages will corrupt intermediate activations.
 struct DeviceScratchArena {
     arena_a: Subbuffer<[u8]>,
     arena_b: Subbuffer<[u8]>,
@@ -220,6 +229,8 @@ struct ClipScratch {
     mlp_hid: Subbuffer<[u8]>,
 }
 
+/// Sub-allocates CLIP-L, CLIP-G, and T5-XXL activations from `arena_a[0..]`.
+/// Valid only during Stage 1 before MMDiT or VAE submissions begin.
 struct TextEncoderWorkspace {
     clip_l: ClipScratch,
     clip_g: ClipScratch,
@@ -258,6 +269,8 @@ impl TextEncoderWorkspace {
     }
 }
 
+/// Sub-allocates MMDiT activations from `arena_a[0..]`, aliasing `TextEncoderWorkspace`.
+/// Valid only during Stage 2 after Stage 1 completes and before Stage 3 begins.
 struct MmditWorkspace {
     t_silu: Subbuffer<[u8]>,
     t_out: Subbuffer<[u8]>,
@@ -302,6 +315,8 @@ impl MmditWorkspace {
     }
 }
 
+/// Uses full `arena_a`, `arena_b`, `arena_c` buffers for VAE decode, aliasing prior stages.
+/// Valid only during Stage 3 after all MMDiT steps have completed.
 struct VaeWorkspace {
     x: Subbuffer<[u8]>,
     norm: Subbuffer<[u8]>,
@@ -1018,9 +1033,9 @@ impl Engine {
         pre.noise.record_push(
             &mut cmd,
             NoisePushConstants {
-                seed_lo: seed as u32,
-                seed_hi: (seed >> 32) as u32,
+                seed,
                 num_pairs,
+                _pad: 0,
             },
         );
         let record_clip = |cmd: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
@@ -2009,13 +2024,14 @@ fn run_daemon() {
                         continue;
                     };
                     let out_path = PathBuf::from(path_str);
-                    let t_start = Instant::now();
+                    let t_e2e = Instant::now();
                     let (clip_l_bytes, eos_l) = encode_clip_tokens(&tok_l, &prompt, 49407);
                     let (clip_g_bytes, eos_g) = encode_clip_tokens(&tok_g, &prompt, 0);
                     let t5_bytes = encode_t5_tokens(&tok_t5, &prompt);
                     buf_tokens_l.write().unwrap().copy_from_slice(&clip_l_bytes);
                     buf_tokens_g.write().unwrap().copy_from_slice(&clip_g_bytes);
                     buf_tokens_t5.write().unwrap().copy_from_slice(&t5_bytes);
+                    let t_gpu = Instant::now();
                     engine.run_stage1_text_and_noise(
                         &prebuilt_text,
                         init_seed,
@@ -2027,15 +2043,16 @@ fn run_daemon() {
                         engine.submit_recorded_and_wait(step_cmd);
                     }
                     engine.submit_recorded_and_wait(&vae_cmd);
+                    let gpu_secs = t_gpu.elapsed().as_secs_f32();
                     if let Some(parent) = out_path.parent() {
                         let _ = create_dir_all(parent);
                     }
                     let rgb_bytes = rgb_out.read().unwrap();
                     write_png_rgb8(&out_path, 1024, 1024, &rgb_bytes);
                     let msg = format!(
-                        "Generated {} (1024x1024, seed {init_seed}) in {:.2}s\n",
+                        "Generated {} (1024x1024, seed {init_seed}) in {gpu_secs:.2}s (e2e {:.2}s)\n",
                         out_path.display(),
-                        t_start.elapsed().as_secs_f32()
+                        t_e2e.elapsed().as_secs_f32()
                     );
                     let _ = stream.write_all(msg.as_bytes());
                 }

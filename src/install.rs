@@ -83,7 +83,6 @@ fn transpose_2d(src: &[f32], rows: usize, cols: usize) -> Vec<f32> {
 
 fn pack_b_tiles_16x16(b_logical: &[f32], k: usize, n: usize) -> Vec<u8> {
     assert!(k % 16 == 0 && n % 16 == 0);
-    let kt_max = k / 16;
     let nt_max = n / 16;
     let mut packed = vec![0u8; k * n * 2];
     let kt_stride = 16 * nt_max * 16 * 2;

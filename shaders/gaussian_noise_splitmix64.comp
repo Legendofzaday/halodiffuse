@@ -7,6 +7,7 @@ layout(std430, set = 0, binding = 0) writeonly buffer OutLatents {
 layout(push_constant) uniform PushConstants {
   uint64_t seed;
   uint num_pairs;
+  uint _pad;
 }
 pc;
 uint64_t splitmix64(uint64_t z) {
@@ -25,9 +26,9 @@ void main() {
   uint64_t s1 = pc.seed + (2UL * idx + 2UL) * GAMMA;
   uint64_t r0 = splitmix64(s0);
   uint64_t r1 = splitmix64(s1);
-  const float INV_2P24 = 1.0 / 16777216.0;
-  float u1 = (float(uint(r0 >> 40)) + 0.5) * INV_2P24;
-  float u2 = float(uint(r1 >> 40)) * INV_2P24;
+  const float INV_2P23 = 1.0 / 8388608.0;
+  float u1 = (float(uint(r0 >> 41)) + 0.5) * INV_2P23;
+  float u2 = float(uint(r1 >> 41)) * INV_2P23;
   float radius = sqrt(-2.0 * log(u1));
   float theta = 6.28318530717958647692 * u2;
   float z0 = radius * cos(theta);
