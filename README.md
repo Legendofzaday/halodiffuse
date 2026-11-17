@@ -93,7 +93,7 @@ Options:
 
 | Engine                    | Backend      | Precision   | End-to-End (Warm) | Runtime                   |
 | :------------------------ | :----------- | :---------- | :---------------- | :------------------------ |
-| **`halodiffuse`**         | **`Vulkan`** | **`FP16`**  | **`4.9s`**       | **`~23.6 MB binary`**     |
+| **`halodiffuse`**         | **`Vulkan`** | **`FP16`**  | **`4.8s`**       | **`~23.7 MB binary`**     |
 | **ComfyUI**               | ROCm         | BF16 / FP16 | ~11.8 – 14.5 s    | ~18 GB Python + ROCm venv |
 | **stable-diffusion.cpp**  | Vulkan       | FP16        | ~13.5 – 16.2 s    | ~50 MB binary             |
 | **HuggingFace Diffusers** | ROCm         | BF16 / FP16 | ~18.4 s+          | ~18 GB Python + ROCm venv |
