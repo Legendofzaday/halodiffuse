@@ -1,6 +1,6 @@
 [package]
 name = "halodiffuse"
-version = "1.1.0"
+version = "1.1.2"
 edition = "2024"
 description = "Quick stable diffusion 3.5 large turbo inference."
 license = "AGPL-3.0-only"
