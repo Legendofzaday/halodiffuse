@@ -1,0 +1,89 @@
+#version 460
+#extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_shader_16bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+layout(push_constant) uniform PushConstants { uint t_offset; }
+pc;
+layout(std430, set = 0, binding = 0) restrict buffer QKV {
+  f16vec4 buffer_qkv[];
+};
+layout(std430, set = 0, binding = 1) readonly restrict buffer GammaQ {
+  f16vec4 gamma_q[];
+};
+layout(std430, set = 0, binding = 2) readonly restrict buffer GammaK {
+  f16vec4 gamma_k[];
+};
+void main() {
+  const uint tid = gl_LocalInvocationID.x;
+  const uint head_idx = (gl_WorkGroupID.x << 3u) + (tid >> 4u);
+  if (head_idx >= 60u) {
+    return;
+  }
+  const uint pos = gl_WorkGroupID.y;
+  const uint lane_pair = tid & 15u;
+  const uint head_base = pos * 2880u + (head_idx << 5u);
+  const vec4 v_lo = vec4(buffer_qkv[head_base + lane_pair]);
+  const vec4 v_hi = vec4(buffer_qkv[head_base + 16u + lane_pair]);
+  float sum_sq = v_lo.x * v_lo.x;
+  sum_sq = fma(v_lo.y, v_lo.y, sum_sq);
+  sum_sq = fma(v_lo.z, v_lo.z, sum_sq);
+  sum_sq = fma(v_lo.w, v_lo.w, sum_sq);
+  sum_sq = fma(v_hi.x, v_hi.x, sum_sq);
+  sum_sq = fma(v_hi.y, v_hi.y, sum_sq);
+  sum_sq = fma(v_hi.z, v_hi.z, sum_sq);
+  sum_sq = fma(v_hi.w, v_hi.w, sum_sq);
+  sum_sq += subgroupShuffleXor(sum_sq, 8u);
+  sum_sq += subgroupShuffleXor(sum_sq, 4u);
+  sum_sq += subgroupShuffleXor(sum_sq, 2u);
+  sum_sq += subgroupShuffleXor(sum_sq, 1u);
+  const float rstd = inversesqrt(fma(sum_sq, 0.0078125f, 1e-6f));
+  const bool is_k = head_idx >= 30u;
+  const vec4 g_lo = vec4(is_k ? gamma_k[lane_pair] : gamma_q[lane_pair]);
+  const vec4 g_hi =
+      vec4(is_k ? gamma_k[16u + lane_pair] : gamma_q[16u + lane_pair]);
+  vec4 q_lo = v_lo * rstd * g_lo;
+  vec4 q_hi = v_hi * rstd * g_hi;
+  const float pos_t = float(pc.t_offset);
+  const float pos_y = float(pos >> 6u);
+  const float pos_x = float(pos & 63u);
+  if (lane_pair < 8u) {
+    const vec2 p = vec2(lane_pair << 1u) + vec2(0.0f, 1.0f);
+    const vec2 theta = pos_t * exp2(p * (-16.0f / 32.0f));
+    const vec2 c = cos(theta);
+    const vec2 s = sin(theta);
+    q_lo =
+        vec4(fma(q_lo.x, c.x, -q_lo.y * s.x), fma(q_lo.y, c.x, q_lo.x * s.x),
+             fma(q_lo.z, c.y, -q_lo.w * s.y), fma(q_lo.w, c.y, q_lo.z * s.y));
+  } else {
+    const vec2 p = vec2((lane_pair - 8u) << 1u) + vec2(0.0f, 1.0f);
+    const vec2 theta = pos_y * exp2(p * (-16.0f / 48.0f));
+    const vec2 c = cos(theta);
+    const vec2 s = sin(theta);
+    q_lo =
+        vec4(fma(q_lo.x, c.x, -q_lo.y * s.x), fma(q_lo.y, c.x, q_lo.x * s.x),
+             fma(q_lo.z, c.y, -q_lo.w * s.y), fma(q_lo.w, c.y, q_lo.z * s.y));
+  }
+  if (lane_pair < 4u) {
+    const vec2 p = vec2(16u + (lane_pair << 1u)) + vec2(0.0f, 1.0f);
+    const vec2 theta = pos_y * exp2(p * (-16.0f / 48.0f));
+    const vec2 c = cos(theta);
+    const vec2 s = sin(theta);
+    q_hi =
+        vec4(fma(q_hi.x, c.x, -q_hi.y * s.x), fma(q_hi.y, c.x, q_hi.x * s.x),
+             fma(q_hi.z, c.y, -q_hi.w * s.y), fma(q_hi.w, c.y, q_hi.z * s.y));
+  } else {
+    const vec2 p = vec2((lane_pair - 4u) << 1u) + vec2(0.0f, 1.0f);
+    const vec2 theta = pos_x * exp2(p * (-16.0f / 48.0f));
+    const vec2 c = cos(theta);
+    const vec2 s = sin(theta);
+    q_hi =
+        vec4(fma(q_hi.x, c.x, -q_hi.y * s.x), fma(q_hi.y, c.x, q_hi.x * s.x),
+             fma(q_hi.z, c.y, -q_hi.w * s.y), fma(q_hi.w, c.y, q_hi.z * s.y));
+  }
+  buffer_qkv[head_base + lane_pair] = f16vec4(q_lo);
+  buffer_qkv[head_base + 16u + lane_pair] = f16vec4(q_hi);
+}
