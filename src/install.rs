@@ -82,7 +82,7 @@ fn transpose_2d(src: &[f32], rows: usize, cols: usize) -> Vec<f32> {
 }
 
 fn pack_b_tiles_16x16(b_logical: &[f32], k: usize, n: usize) -> Vec<u8> {
-    assert!(k % 16 == 0 && n % 16 == 0);
+    assert!(k.is_multiple_of(16) && k.is_multiple_of(16));
     let nt_max = n / 16;
     let mut packed = vec![0u8; k * n * 2];
     let kt_stride = 16 * nt_max * 16 * 2;
@@ -90,8 +90,7 @@ fn pack_b_tiles_16x16(b_logical: &[f32], k: usize, n: usize) -> Vec<u8> {
         .par_chunks_exact_mut(kt_stride)
         .enumerate()
         .for_each(|(kt, kt_slice)| {
-            for n_in in 0..16 {
-                let nc = PERM_N[n_in];
+            for (n_in, &nc) in PERM_N.iter().enumerate() {
                 for nt in 0..nt_max {
                     let col = nt * 16 + nc;
                     let dst_base = (n_in * nt_max + nt) * 16 * 2;
@@ -415,7 +414,7 @@ fn convert_t5(input_path: &Path, output_path: &Path) {
         let norm2 = rmsnorm_fp16(&x, &ln2_g_f16, 256, 4096);
         let mut u = matmul_nt_f16_in(&norm2, &wi_0, 256, 10240, 4096);
         for v in &mut u {
-            let c = -2.30198566 * (*v + 0.044715 * (*v) * (*v) * (*v));
+            let c = -2.3019857 * (*v + 0.044715 * (*v) * (*v) * (*v));
             *v /= 1.0 + c.exp2();
         }
         let g = matmul_nt_f16_in(&norm2, &wi_1, 256, 10240, 4096);

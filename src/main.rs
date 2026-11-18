@@ -719,6 +719,7 @@ impl Engine {
             .unwrap();
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_clip(
         &self,
         w: &WeightPack,
@@ -867,6 +868,7 @@ impl Engine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_text_encoders(
         &self,
         ws: &TextEncoderWorkspace,
@@ -886,7 +888,7 @@ impl Engine {
         let noise = self.bind(
             "gaussian_noise_splitmix64.comp",
             [num_pairs.div_ceil(128), 1, 1],
-            &[latents_x.clone()],
+            std::slice::from_ref(latents_x),
         );
         let y_l_slice = y_pooled.clone().slice(0..(768 * 2));
         let y_g_slice = y_pooled.clone().slice((768 * 2)..(2048 * 2));
@@ -1055,6 +1057,7 @@ impl Engine {
         self.submit_and_wait(cmd);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn record_mmdit_step_cmd(
         &self,
         ws: &MmditWorkspace,
@@ -2052,6 +2055,7 @@ fn run_daemon() {
     let _ = remove_file(&pid_path);
 }
 
+#[allow(clippy::zombie_processes)]
 fn main() {
     let args: Vec<String> = args().skip(1).collect();
     let sock_path = get_sock_path();
