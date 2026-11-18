@@ -93,10 +93,12 @@ Options:
 
 | Engine                    | Backend      | Precision   | End-to-End (Warm) | Runtime                   |
 | :------------------------ | :----------- | :---------- | :---------------- | :------------------------ |
-| **`halodiffuse`**         | **`Vulkan`** | **`FP16`**  | **`4.8s`**       | **`~23.7 MB binary`**     |
+| **`halodiffuse`**         | **`Vulkan`** | **`FP16`**  | **`4.6s`**       | **`~23.7 MB binary`**     |
 | **ComfyUI**               | ROCm         | BF16 / FP16 | ~11.8 – 14.5 s    | ~18 GB Python + ROCm venv |
 | **stable-diffusion.cpp**  | Vulkan       | FP16        | ~13.5 – 16.2 s    | ~50 MB binary             |
 | **HuggingFace Diffusers** | ROCm         | BF16 / FP16 | ~18.4 s+          | ~18 GB Python + ROCm venv |
+
+**Note:** halodiffuse was tested on a proart px13 ai max+ 395 128GB on 7.3.4-300.fc45.x86_64 with 135W power limit.
 
 ---
 
