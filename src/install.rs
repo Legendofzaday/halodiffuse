@@ -2,15 +2,17 @@ use hf_hub::HFClientSync;
 use rayon::prelude::*;
 use safetensors::Dtype;
 use safetensors::tensor::{SafeTensors, TensorView, serialize_to_file};
-use std::collections::BTreeMap;
-use std::fs::{create_dir_all, read, rename};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{create_dir_all, read, read_to_string, rename};
 use std::io::{Write, stdout};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 use std::time::Instant;
 
-const REPO_OWNER: &str = "stabilityai";
-const REPO_NAME: &str = "stable-diffusion-3.5-large-turbo";
+const SD35_OWNER: &str = "stabilityai";
+const SD35_NAME: &str = "stable-diffusion-3.5-large-turbo";
+const ZIMAGE_OWNER: &str = "Tongyi-MAI";
+const ZIMAGE_NAME: &str = "Z-Image-Turbo";
 const PERM_N: [usize; 16] = [0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15];
 
 type PackedMap = BTreeMap<String, (Vec<usize>, Vec<u8>)>;
@@ -31,26 +33,57 @@ impl<'a> RawFile<'a> {
     }
 
     fn read_f32(&self, key: &str) -> (Vec<usize>, Vec<f32>) {
-        let view = self.st.tensor(key).unwrap();
-        let shape = view.shape().to_vec();
-        let raw = view.data();
-        let vals = match view.dtype() {
-            Dtype::F32 => raw
-                .par_chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect(),
-            Dtype::F16 => raw
-                .par_chunks_exact(2)
-                .map(|c| f16::from_le_bytes([c[0], c[1]]) as f32)
-                .collect(),
-            Dtype::BF16 => raw
-                .par_chunks_exact(2)
-                .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
-                .collect(),
-            other => panic!("unsupported dtype {other:?} for {key}"),
-        };
-        (shape, vals)
+        decode_view(key, &self.st.tensor(key).unwrap())
     }
+}
+
+struct RawSet<'a> {
+    shards: Vec<SafeTensors<'a>>,
+}
+
+impl<'a> RawSet<'a> {
+    fn from_buffers(buffers: &'a [Vec<u8>]) -> Self {
+        Self {
+            shards: buffers
+                .iter()
+                .map(|b| SafeTensors::deserialize(b).unwrap())
+                .collect(),
+        }
+    }
+
+    fn has(&self, key: &str) -> bool {
+        self.shards.iter().any(|st| st.tensor(key).is_ok())
+    }
+
+    fn read_f32(&self, key: &str) -> (Vec<usize>, Vec<f32>) {
+        let view = self
+            .shards
+            .iter()
+            .find_map(|st| st.tensor(key).ok())
+            .unwrap_or_else(|| panic!("missing tensor: {key}"));
+        decode_view(key, &view)
+    }
+}
+
+fn decode_view(key: &str, view: &TensorView<'_>) -> (Vec<usize>, Vec<f32>) {
+    let shape = view.shape().to_vec();
+    let raw = view.data();
+    let vals = match view.dtype() {
+        Dtype::F32 => raw
+            .par_chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect(),
+        Dtype::F16 => raw
+            .par_chunks_exact(2)
+            .map(|c| f16::from_le_bytes([c[0], c[1]]) as f32)
+            .collect(),
+        Dtype::BF16 => raw
+            .par_chunks_exact(2)
+            .map(|c| f32::from_bits((u16::from_le_bytes([c[0], c[1]]) as u32) << 16))
+            .collect(),
+        other => panic!("unsupported dtype {other:?} for {key}"),
+    };
+    (shape, vals)
 }
 
 fn f32_to_f16_bytes(vals: &[f32]) -> Vec<u8> {
@@ -82,7 +115,7 @@ fn transpose_2d(src: &[f32], rows: usize, cols: usize) -> Vec<f32> {
 }
 
 fn pack_b_tiles_16x16(b_logical: &[f32], k: usize, n: usize) -> Vec<u8> {
-    assert!(k.is_multiple_of(16) && k.is_multiple_of(16));
+    assert!(k.is_multiple_of(16) && n.is_multiple_of(16));
     let nt_max = n / 16;
     let mut packed = vec![0u8; k * n * 2];
     let kt_stride = 16 * nt_max * 16 * 2;
@@ -128,6 +161,14 @@ fn save_packed(out: &PackedMap, path: &Path) {
 }
 
 fn find_key(raw: &RawFile<'_>, prefixes: &[&str], suffix: &str) -> String {
+    prefixes
+        .iter()
+        .map(|p| format!("{p}{suffix}"))
+        .find(|cand| raw.has(cand))
+        .unwrap_or_else(|| panic!("missing tensor: {suffix}"))
+}
+
+fn find_key_set(raw: &RawSet<'_>, prefixes: &[&str], suffix: &str) -> String {
     prefixes
         .iter()
         .map(|p| format!("{p}{suffix}"))
@@ -280,6 +321,120 @@ fn matmul_nt_f16_in(a: &[f16], b_nk: &[f32], m: usize, n: usize, k: usize) -> Ve
         }
     });
     out
+}
+
+fn rms_gain(w_nk: &[f32], n: usize) -> f32 {
+    let sum_sq: f64 = w_nk.par_iter().map(|&v| (v as f64) * (v as f64)).sum();
+    (sum_sq / n as f64).sqrt() as f32
+}
+
+fn max_row_l2(w_nk: &[f32], n: usize, k: usize) -> f32 {
+    w_nk.par_chunks_exact(k)
+        .take(n)
+        .map(|row| row.iter().map(|&v| v * v).sum::<f32>().sqrt())
+        .reduce(|| 0.0f32, f32::max)
+}
+
+fn pow2_safe_div(est_rms: f32, est_peak: f32, rms_cap: f32, peak_cap: f32) -> f32 {
+    let mut div = 1.0f32;
+    while est_rms / div > rms_cap || (est_peak / div > peak_cap && est_rms / (div * 2.0) >= 0.05) {
+        div *= 2.0;
+    }
+    div
+}
+
+fn qwen3_causal_gqa_f32(
+    q_raw: &[f32],
+    k_raw: &[f32],
+    v_raw: &[f32],
+    q_norm: &[f32],
+    k_norm: &[f32],
+) -> Vec<f16> {
+    const SEQ: usize = 256;
+    const HQ: usize = 32;
+    const HKV: usize = 8;
+    const D: usize = 128;
+    let mut inv_freq = [0.0f32; D / 2];
+    for d in 0..(D / 2) {
+        inv_freq[d] = 1.0 / 1_000_000.0f32.powf((2 * d) as f32 / D as f32);
+    }
+    let mut q = vec![0.0f32; SEQ * HQ * D];
+    for t in 0..SEQ {
+        for h in 0..HQ {
+            let src = &q_raw[(t * HQ + h) * D..(t * HQ + h + 1) * D];
+            let sq: f32 = src.iter().map(|&v| v * v).sum();
+            let rstd = 1.0 / (sq / D as f32 + 1e-6).sqrt();
+            let dst = &mut q[(t * HQ + h) * D..(t * HQ + h + 1) * D];
+            for d in 0..(D / 2) {
+                let x0 = src[d] * rstd * q_norm[d];
+                let x1 = src[d + D / 2] * rstd * q_norm[d + D / 2];
+                let ang = (t as f32) * inv_freq[d];
+                let (s, c) = ang.sin_cos();
+                dst[d] = x0 * c - x1 * s;
+                dst[d + D / 2] = x0 * s + x1 * c;
+            }
+        }
+    }
+    let mut k = vec![0.0f32; SEQ * HKV * D];
+    for t in 0..SEQ {
+        for h in 0..HKV {
+            let src = &k_raw[(t * HKV + h) * D..(t * HKV + h + 1) * D];
+            let sq: f32 = src.iter().map(|&v| v * v).sum();
+            let rstd = 1.0 / (sq / D as f32 + 1e-6).sqrt();
+            let dst = &mut k[(t * HKV + h) * D..(t * HKV + h + 1) * D];
+            for d in 0..(D / 2) {
+                let x0 = src[d] * rstd * k_norm[d];
+                let x1 = src[d + D / 2] * rstd * k_norm[d + D / 2];
+                let ang = (t as f32) * inv_freq[d];
+                let (s, c) = ang.sin_cos();
+                dst[d] = x0 * c - x1 * s;
+                dst[d + D / 2] = x0 * s + x1 * c;
+            }
+        }
+    }
+    let scale = 1.0 / (D as f32).sqrt();
+    let mut out = vec![0.0f32; SEQ * HQ * D];
+    out.par_chunks_exact_mut(HQ * D)
+        .enumerate()
+        .for_each(|(tq, out_tok)| {
+            let mut probs = [0.0f32; SEQ];
+            for h in 0..HQ {
+                let kvh = h / 4;
+                let q_vec = &q[(tq * HQ + h) * D..(tq * HQ + h + 1) * D];
+                let mut max_s = f32::NEG_INFINITY;
+                for tk in 0..=tq {
+                    let k_vec = &k[(tk * HKV + kvh) * D..(tk * HKV + kvh + 1) * D];
+                    let mut dot = 0.0f32;
+                    for d in 0..D {
+                        dot += q_vec[d] * k_vec[d];
+                    }
+                    let s = dot * scale;
+                    probs[tk] = s;
+                    if s > max_s {
+                        max_s = s;
+                    }
+                }
+                let mut denom = 0.0f32;
+                for tk in 0..=tq {
+                    let e = (probs[tk] - max_s).exp();
+                    probs[tk] = e;
+                    denom += e;
+                }
+                let inv_denom = 1.0 / denom;
+                let out_head = &mut out_tok[h * D..(h + 1) * D];
+                for tk in 0..=tq {
+                    let p = probs[tk] * inv_denom;
+                    let v_vec = &v_raw[(tk * HKV + kvh) * D..(tk * HKV + kvh + 1) * D];
+                    for d in 0..D {
+                        out_head[d] += p * v_vec[d];
+                    }
+                }
+                for d in 0..D {
+                    out_head[d] = (out_head[d].clamp(-65504.0, 65504.0) as f16) as f32;
+                }
+            }
+        });
+    out.into_iter().map(|v| v as f16).collect()
 }
 
 fn convert_t5(input_path: &Path, output_path: &Path) {
@@ -735,6 +890,638 @@ fn convert_mmdit(input_path: &Path, output_path: &Path) {
     save_packed(&out, output_path);
 }
 
+fn convert_qwen3(paths: &[PathBuf], output_path: &Path) {
+    let buffers: Vec<Vec<u8>> = paths.iter().map(|p| read(p).unwrap()).collect();
+    let raw = RawSet::from_buffers(&buffers);
+    let pfx = ["model.", ""];
+    let mut out = PackedMap::new();
+    let res_scale = 8.0f32;
+    let (emb_shape, mut emb_vals) = raw.read_f32(&find_key_set(&raw, &pfx, "embed_tokens.weight"));
+    for v in &mut emb_vals {
+        *v = (*v / res_scale) as f16 as f32;
+    }
+    insert_f16(&mut out, "embed_tokens.weight", emb_shape, &emb_vals);
+    let calib_prefix = [
+        151644usize,
+        872,
+        198,
+        8251,
+        11,
+        264,
+        10765,
+        315,
+        264,
+        11202,
+        3691,
+        304,
+        6633,
+        1189,
+        11,
+        6399,
+        10300,
+        11,
+        825,
+        323,
+        825,
+        151645,
+        198,
+        151644,
+        77091,
+        198,
+    ];
+    let mut x = vec![0.0f16; 256 * 2560];
+    for r in 0..256 {
+        let tok = *calib_prefix.get(r).unwrap_or(&151643);
+        let src = &emb_vals[tok * 2560..(tok + 1) * 2560];
+        for c in 0..2560 {
+            x[r * 2560 + c] = src[c] as f16;
+        }
+    }
+    let sqrt_k = (2560.0f32).sqrt();
+    for i in 0..35 {
+        let p = format!("layers.{i}");
+        let (_, mut ln1) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{p}.input_layernorm.weight"),
+        ));
+        let (_, q_norm) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{p}.self_attn.q_norm.weight"),
+        ));
+        let (_, k_norm) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{p}.self_attn.k_norm.weight"),
+        ));
+        let (_, mut wq) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{p}.self_attn.q_proj.weight"),
+        ));
+        let (_, mut wk) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{p}.self_attn.k_proj.weight"),
+        ));
+        let (_, mut wv) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{p}.self_attn.v_proj.weight"),
+        ));
+        let (_, mut wo) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{p}.self_attn.o_proj.weight"),
+        ));
+        for v in &mut wo {
+            *v /= res_scale;
+        }
+        loop {
+            let ln1_test: Vec<f16> = ln1
+                .iter()
+                .map(|&v| v.clamp(-65504.0, 65504.0) as f16)
+                .collect();
+            let norm1_test = rmsnorm_fp16(&x, &ln1_test, 256, 2560);
+            if !norm1_test
+                .iter()
+                .any(|&v| v.is_infinite() || (v as f32).abs() > 2000.0)
+            {
+                break;
+            }
+            for v in &mut ln1 {
+                *v /= 8.0;
+            }
+            for v in &mut wq {
+                *v *= 8.0;
+            }
+            for v in &mut wk {
+                *v *= 8.0;
+            }
+            for v in &mut wv {
+                *v *= 8.0;
+            }
+        }
+        let ln1_f16: Vec<f16> = ln1
+            .iter()
+            .map(|&v| v.clamp(-65504.0, 65504.0) as f16)
+            .collect();
+        let norm1 = rmsnorm_fp16(&x, &ln1_f16, 256, 2560);
+        let ln1_rms = (ln1.iter().map(|&v| v * v).sum::<f32>() / 2560.0).sqrt();
+        let q_sim = matmul_nt_f16_in(&norm1, &wq, 256, 4096, 2560);
+        let q_max = q_sim.iter().fold(
+            max_row_l2(&wq, 4096, 2560) * sqrt_k * ln1_rms * 0.5,
+            |m, &v| m.max(v.abs()),
+        );
+        let mut q_div = 1.0f32;
+        while q_max / q_div > 2000.0 {
+            q_div *= 2.0;
+        }
+        if q_div > 1.0 {
+            for v in &mut wq {
+                *v /= q_div;
+            }
+        }
+        let k_sim = matmul_nt_f16_in(&norm1, &wk, 256, 1024, 2560);
+        let k_max = k_sim.iter().fold(
+            max_row_l2(&wk, 1024, 2560) * sqrt_k * ln1_rms * 0.5,
+            |m, &v| m.max(v.abs()),
+        );
+        let mut k_div = 1.0f32;
+        while k_max / k_div > 2000.0 {
+            k_div *= 2.0;
+        }
+        if k_div > 1.0 {
+            for v in &mut wk {
+                *v /= k_div;
+            }
+        }
+        let v_sim = matmul_nt_f16_in(&norm1, &wv, 256, 1024, 2560);
+        let v_max = v_sim.iter().fold(
+            max_row_l2(&wv, 1024, 2560) * sqrt_k * ln1_rms * 0.5,
+            |m, &v| m.max(v.abs()),
+        );
+        let wo_max = wo.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+        let mut v_div = 1.0f32;
+        while (v_max / v_div > 2000.0) && (wo_max * v_div * 2.0 < 30000.0) {
+            v_div *= 2.0;
+        }
+        if v_div > 1.0 {
+            for v in &mut wv {
+                *v /= v_div;
+            }
+            for v in &mut wo {
+                *v *= v_div;
+            }
+        }
+        let q_scaled = matmul_nt_f16_in(&norm1, &wq, 256, 4096, 2560);
+        let k_scaled = matmul_nt_f16_in(&norm1, &wk, 256, 1024, 2560);
+        let v_scaled = matmul_nt_f16_in(&norm1, &wv, 256, 1024, 2560);
+        let attn_in = qwen3_causal_gqa_f32(&q_scaled, &k_scaled, &v_scaled, &q_norm, &k_norm);
+        let attn_delta = matmul_nt_f16_in(&attn_in, &wo, 256, 2560, 4096);
+        for idx in 0..x.len() {
+            x[idx] = ((x[idx] as f32) + attn_delta[idx]).clamp(-65504.0, 65504.0) as f16;
+        }
+        let (_, mut ln2) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{p}.post_attention_layernorm.weight"),
+        ));
+        let (_, mut w_gate) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{p}.mlp.gate_proj.weight"),
+        ));
+        let (_, mut w_up) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{p}.mlp.up_proj.weight"),
+        ));
+        let (_, mut w_down) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{p}.mlp.down_proj.weight"),
+        ));
+        for v in &mut w_down {
+            *v /= res_scale;
+        }
+        loop {
+            let ln2_test: Vec<f16> = ln2
+                .iter()
+                .map(|&v| v.clamp(-65504.0, 65504.0) as f16)
+                .collect();
+            let norm2_test = rmsnorm_fp16(&x, &ln2_test, 256, 2560);
+            if !norm2_test
+                .iter()
+                .any(|&v| v.is_infinite() || (v as f32).abs() > 2000.0)
+            {
+                break;
+            }
+            for v in &mut ln2 {
+                *v /= 8.0;
+            }
+            for v in &mut w_gate {
+                *v *= 8.0;
+            }
+            for v in &mut w_up {
+                *v *= 8.0;
+            }
+        }
+        let ln2_f16: Vec<f16> = ln2
+            .iter()
+            .map(|&v| v.clamp(-65504.0, 65504.0) as f16)
+            .collect();
+        let norm2 = rmsnorm_fp16(&x, &ln2_f16, 256, 2560);
+        let ln2_rms = (ln2.iter().map(|&v| v * v).sum::<f32>() / 2560.0).sqrt();
+        let mut gate_act = matmul_nt_f16_in(&norm2, &w_gate, 256, 9728, 2560);
+        for v in &mut gate_act {
+            *v /= 1.0 + (-*v).exp();
+        }
+        let up_act = matmul_nt_f16_in(&norm2, &w_up, 256, 9728, 2560);
+        let gate_bound = max_row_l2(&w_gate, 9728, 2560) * sqrt_k * ln2_rms * 0.5;
+        let up_bound = max_row_l2(&w_up, 9728, 2560) * sqrt_k * ln2_rms * 0.5;
+        let ffn_raw_max = gate_act
+            .iter()
+            .zip(up_act.iter())
+            .fold(up_bound.max(gate_bound * up_bound * 0.25), |m, (&a, &b)| {
+                m.max((a * b).abs()).max(b.abs())
+            });
+        let down_max = w_down.iter().fold(0.0f32, |m, &v| m.max(v.abs()));
+        let mut ffn_div = 1.0f32;
+        while (ffn_raw_max / ffn_div > 2000.0) && (down_max * ffn_div * 2.0 < 30000.0) {
+            ffn_div *= 2.0;
+        }
+        if ffn_div > 1.0 {
+            for v in &mut w_up {
+                *v /= ffn_div;
+            }
+            for v in &mut w_down {
+                *v *= ffn_div;
+            }
+        }
+        let ffn_hid_f16: Vec<f16> = gate_act
+            .iter()
+            .zip(up_act.iter())
+            .map(|(&a, &b)| ((a * b) / ffn_div).clamp(-65504.0, 65504.0) as f16)
+            .collect();
+        let ffn_delta = matmul_nt_f16_in(&ffn_hid_f16, &w_down, 256, 2560, 9728);
+        for idx in 0..x.len() {
+            x[idx] = ((x[idx] as f32) + ffn_delta[idx]).clamp(-65504.0, 65504.0) as f16;
+        }
+        insert_f16(&mut out, format!("layers.{i}.ln1.gamma"), vec![2560], &ln1);
+        insert_f16(
+            &mut out,
+            format!("layers.{i}.attn.q_norm"),
+            vec![128],
+            &q_norm,
+        );
+        insert_f16(
+            &mut out,
+            format!("layers.{i}.attn.k_norm"),
+            vec![128],
+            &k_norm,
+        );
+        let mut wqkv = Vec::with_capacity(6144 * 2560);
+        wqkv.extend_from_slice(&wq);
+        wqkv.extend_from_slice(&wk);
+        wqkv.extend_from_slice(&wv);
+        insert_packed_nk(
+            &mut out,
+            format!("layers.{i}.attn.qkv.weight"),
+            &wqkv,
+            2560,
+            6144,
+        );
+        insert_packed_nk(
+            &mut out,
+            format!("layers.{i}.attn.o.weight"),
+            &wo,
+            4096,
+            2560,
+        );
+        insert_f16(&mut out, format!("layers.{i}.ln2.gamma"), vec![2560], &ln2);
+        insert_packed_nk(
+            &mut out,
+            format!("layers.{i}.mlp.gate.weight"),
+            &w_gate,
+            2560,
+            9728,
+        );
+        insert_packed_nk(
+            &mut out,
+            format!("layers.{i}.mlp.up.weight"),
+            &w_up,
+            2560,
+            9728,
+        );
+        insert_packed_nk(
+            &mut out,
+            format!("layers.{i}.mlp.down.weight"),
+            &w_down,
+            9728,
+            2560,
+        );
+    }
+    save_packed(&out, output_path);
+}
+
+fn convert_s3dit(paths: &[PathBuf], output_path: &Path) {
+    let buffers: Vec<Vec<u8>> = paths.iter().map(|p| read(p).unwrap()).collect();
+    let raw = RawSet::from_buffers(&buffers);
+    let pfx = ["", "model.diffusion_model."];
+    let mut out = PackedMap::new();
+    for (name, k, n) in [
+        ("t_embedder.mlp.0", 256, 1024),
+        ("t_embedder.mlp.2", 1024, 256),
+    ] {
+        let (_, w) = raw.read_f32(&find_key_set(&raw, &pfx, &format!("{name}.weight")));
+        let (_, b) = raw.read_f32(&find_key_set(&raw, &pfx, &format!("{name}.bias")));
+        insert_f16(
+            &mut out,
+            format!("{name}.weight"),
+            vec![k, n],
+            &transpose_2d(&w, n, k),
+        );
+        insert_f16(&mut out, format!("{name}.bias"), vec![n], &b);
+    }
+    let (_, cap_norm) = raw.read_f32(&find_key_set(&raw, &pfx, "cap_embedder.0.weight"));
+    let (_, cap_lin_w) = raw.read_f32(&find_key_set(&raw, &pfx, "cap_embedder.1.weight"));
+    let (_, cap_lin_b) = raw.read_f32(&find_key_set(&raw, &pfx, "cap_embedder.1.bias"));
+    let (_, cap_pad) = raw.read_f32(&find_key_set(&raw, &pfx, "cap_pad_token"));
+    insert_f16(&mut out, "cap_embedder.norm.gamma", vec![2560], &cap_norm);
+    insert_packed_nk(
+        &mut out,
+        "cap_embedder.linear.weight",
+        &cap_lin_w,
+        2560,
+        3840,
+    );
+    insert_f16(&mut out, "cap_embedder.linear.bias", vec![3840], &cap_lin_b);
+    insert_f16(&mut out, "cap_pad_token", vec![3840], &cap_pad);
+    let (_, x_w_raw) = raw.read_f32(&find_key_set(&raw, &pfx, "all_x_embedder.2-1.weight"));
+    let (_, x_b) = raw.read_f32(&find_key_set(&raw, &pfx, "all_x_embedder.2-1.bias"));
+    let mut x_w_perm = vec![0.0f32; 3840 * 64];
+    for row in 0..3840 {
+        for p0 in 0..2 {
+            for p1 in 0..2 {
+                for c in 0..16 {
+                    let src_col = (p0 * 2 + p1) * 16 + c;
+                    let dst_col = (c * 2 + p0) * 2 + p1;
+                    x_w_perm[row * 64 + dst_col] = x_w_raw[row * 64 + src_col];
+                }
+            }
+        }
+    }
+    insert_packed_nk(&mut out, "x_embedder.weight", &x_w_perm, 64, 3840);
+    insert_f16(&mut out, "x_embedder.bias", vec![3840], &x_b);
+    let mut pack_block = |src_p: &str, dst_p: &str, modulated: bool| {
+        let (_, an1) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{src_p}.attention_norm1.weight"),
+        ));
+        let (_, an2) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{src_p}.attention_norm2.weight"),
+        ));
+        let (_, fn1) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{src_p}.ffn_norm1.weight"),
+        ));
+        let (_, fn2) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{src_p}.ffn_norm2.weight"),
+        ));
+        insert_f16(&mut out, format!("{dst_p}.attn_norm1"), vec![3840], &an1);
+        insert_f16(&mut out, format!("{dst_p}.attn_norm2"), vec![3840], &an2);
+        insert_f16(&mut out, format!("{dst_p}.ffn_norm1"), vec![3840], &fn1);
+        insert_f16(&mut out, format!("{dst_p}.ffn_norm2"), vec![3840], &fn2);
+        let (_, mut wq) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{src_p}.attention.to_q.weight"),
+        ));
+        let (_, mut wk) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{src_p}.attention.to_k.weight"),
+        ));
+        let (_, mut wv) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{src_p}.attention.to_v.weight"),
+        ));
+        let (_, nq) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{src_p}.attention.norm_q.weight"),
+        ));
+        let (_, nk) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{src_p}.attention.norm_k.weight"),
+        ));
+        let (_, mut wo) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{src_p}.attention.to_out.0.weight"),
+        ));
+        let (_, w1) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{src_p}.feed_forward.w1.weight"),
+        ));
+        let (_, mut w3) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{src_p}.feed_forward.w3.weight"),
+        ));
+        let (_, mut w2) = raw.read_f32(&find_key_set(
+            &raw,
+            &pfx,
+            &format!("{src_p}.feed_forward.w2.weight"),
+        ));
+        let (msa_scale_est, mlp_scale_est) = if modulated {
+            let (_, ada_w) = raw.read_f32(&find_key_set(
+                &raw,
+                &pfx,
+                &format!("{src_p}.adaLN_modulation.0.weight"),
+            ));
+            let (_, ada_b) = raw.read_f32(&find_key_set(
+                &raw,
+                &pfx,
+                &format!("{src_p}.adaLN_modulation.0.bias"),
+            ));
+            let mut msa_sq = 0.0f64;
+            for c in 0..3840 {
+                let row = &ada_w[c * 256..(c + 1) * 256];
+                let l2 = row.iter().map(|&v| v * v).sum::<f32>().sqrt();
+                let s = (1.0 + ada_b[c]).abs() + l2;
+                msa_sq += (s as f64) * (s as f64);
+            }
+            let mut mlp_sq = 0.0f64;
+            for c in 7680..11520 {
+                let row = &ada_w[c * 256..(c + 1) * 256];
+                let l2 = row.iter().map(|&v| v * v).sum::<f32>().sqrt();
+                let s = (1.0 + ada_b[c]).abs() + l2;
+                mlp_sq += (s as f64) * (s as f64);
+            }
+            insert_f16(
+                &mut out,
+                format!("{dst_p}.adaln.weight"),
+                vec![256, 15360],
+                &transpose_2d(&ada_w, 15360, 256),
+            );
+            insert_f16(&mut out, format!("{dst_p}.adaln.bias"), vec![15360], &ada_b);
+            (
+                ((msa_sq / 3840.0).sqrt() as f32).max(1.0),
+                ((mlp_sq / 3840.0).sqrt() as f32).max(1.0),
+            )
+        } else {
+            (1.0f32, 1.0f32)
+        };
+        let an1_rms = (an1.iter().map(|&v| v * v).sum::<f32>() / 3840.0)
+            .sqrt()
+            .max(0.25)
+            * msa_scale_est;
+        let q_div = pow2_safe_div(
+            rms_gain(&wq, 3840) * an1_rms,
+            max_row_l2(&wq, 3840, 3840) * an1_rms,
+            2.0,
+            32.0,
+        );
+        let k_div = pow2_safe_div(
+            rms_gain(&wk, 3840) * an1_rms,
+            max_row_l2(&wk, 3840, 3840) * an1_rms,
+            2.0,
+            32.0,
+        );
+        let v_div = pow2_safe_div(
+            rms_gain(&wv, 3840) * an1_rms,
+            max_row_l2(&wv, 3840, 3840) * an1_rms,
+            2.0,
+            32.0,
+        );
+        let v_out_rms = (rms_gain(&wv, 3840) * an1_rms / v_div).max(0.5);
+        let o_div = pow2_safe_div(
+            rms_gain(&wo, 3840) * v_out_rms,
+            max_row_l2(&wo, 3840, 3840) * v_out_rms,
+            2.0,
+            32.0,
+        );
+        let fn1_rms = (fn1.iter().map(|&v| v * v).sum::<f32>() / 3840.0)
+            .sqrt()
+            .max(0.25)
+            * mlp_scale_est;
+        let w1_gain = (rms_gain(&w1, 10240) * fn1_rms).max(1.0);
+        let w1_peak = (max_row_l2(&w1, 10240, 3840) * fn1_rms).max(1.0);
+        let w3_div = pow2_safe_div(
+            rms_gain(&w3, 10240) * fn1_rms * w1_gain,
+            max_row_l2(&w3, 10240, 3840) * fn1_rms * w1_peak,
+            2.0,
+            64.0,
+        );
+        let mlp_hid_rms = (rms_gain(&w3, 10240) * fn1_rms * w1_gain / w3_div).max(0.5);
+        let w2_div = pow2_safe_div(
+            rms_gain(&w2, 3840) * mlp_hid_rms,
+            max_row_l2(&w2, 3840, 10240) * mlp_hid_rms,
+            2.0,
+            32.0,
+        );
+        if q_div > 1.0 {
+            for v in &mut wq {
+                *v /= q_div;
+            }
+        }
+        if k_div > 1.0 {
+            for v in &mut wk {
+                *v /= k_div;
+            }
+        }
+        if v_div > 1.0 {
+            for v in &mut wv {
+                *v /= v_div;
+            }
+        }
+        if o_div > 1.0 {
+            for v in &mut wo {
+                *v /= o_div;
+            }
+        }
+        if w3_div > 1.0 {
+            for v in &mut w3 {
+                *v /= w3_div;
+            }
+        }
+        if w2_div > 1.0 {
+            for v in &mut w2 {
+                *v /= w2_div;
+            }
+        }
+        let mut wqkv = Vec::with_capacity(11520 * 3840);
+        wqkv.extend_from_slice(&wq);
+        wqkv.extend_from_slice(&wk);
+        wqkv.extend_from_slice(&wv);
+        insert_packed_nk(
+            &mut out,
+            format!("{dst_p}.attn.qkv.weight"),
+            &wqkv,
+            3840,
+            11520,
+        );
+        insert_f16(&mut out, format!("{dst_p}.attn.norm_q"), vec![128], &nq);
+        insert_f16(&mut out, format!("{dst_p}.attn.norm_k"), vec![128], &nk);
+        insert_packed_nk(
+            &mut out,
+            format!("{dst_p}.attn.out.weight"),
+            &wo,
+            3840,
+            3840,
+        );
+        insert_packed_nk(&mut out, format!("{dst_p}.ffn.w1.weight"), &w1, 3840, 10240);
+        insert_packed_nk(&mut out, format!("{dst_p}.ffn.w3.weight"), &w3, 3840, 10240);
+        insert_packed_nk(&mut out, format!("{dst_p}.ffn.w2.weight"), &w2, 10240, 3840);
+    };
+    for i in 0..2 {
+        pack_block(
+            &format!("context_refiner.{i}"),
+            &format!("context_refiner.{i}"),
+            false,
+        );
+        pack_block(
+            &format!("noise_refiner.{i}"),
+            &format!("noise_refiner.{i}"),
+            true,
+        );
+    }
+    for i in 0..30 {
+        pack_block(&format!("layers.{i}"), &format!("layers.{i}"), true);
+    }
+    let (_, fl_ada_w) = raw.read_f32(&find_key_set(
+        &raw,
+        &pfx,
+        "all_final_layer.2-1.adaLN_modulation.1.weight",
+    ));
+    let (_, fl_ada_b) = raw.read_f32(&find_key_set(
+        &raw,
+        &pfx,
+        "all_final_layer.2-1.adaLN_modulation.1.bias",
+    ));
+    let (_, fl_w_raw) = raw.read_f32(&find_key_set(
+        &raw,
+        &pfx,
+        "all_final_layer.2-1.linear.weight",
+    ));
+    let (_, fl_b_raw) = raw.read_f32(&find_key_set(&raw, &pfx, "all_final_layer.2-1.linear.bias"));
+    let mut fl_w_perm = vec![0.0f32; 64 * 3840];
+    let mut fl_b_perm = vec![0.0f32; 64];
+    for p0 in 0..2 {
+        for p1 in 0..2 {
+            for c in 0..16 {
+                let src_row = (p0 * 2 + p1) * 16 + c;
+                let dst_row = (c * 2 + p0) * 2 + p1;
+                fl_b_perm[dst_row] = fl_b_raw[src_row];
+                fl_w_perm[dst_row * 3840..(dst_row + 1) * 3840]
+                    .copy_from_slice(&fl_w_raw[src_row * 3840..(src_row + 1) * 3840]);
+            }
+        }
+    }
+    insert_f16(
+        &mut out,
+        "final_layer.adaln.weight",
+        vec![256, 3840],
+        &transpose_2d(&fl_ada_w, 3840, 256),
+    );
+    insert_f16(&mut out, "final_layer.adaln.bias", vec![3840], &fl_ada_b);
+    insert_packed_nk(&mut out, "final_layer.linear.weight", &fl_w_perm, 3840, 64);
+    insert_f16(&mut out, "final_layer.linear.bias", vec![64], &fl_b_perm);
+    save_packed(&out, output_path);
+}
+
 fn convert_vae(input_path: &Path, output_path: &Path) {
     let raw_bytes = read(input_path).unwrap();
     let raw = RawFile::from_bytes(&raw_bytes);
@@ -942,28 +1729,80 @@ fn convert_vae(input_path: &Path, output_path: &Path) {
     save_packed(&out, output_path);
 }
 
-fn fetch(client: &HFClientSync, filename: &str, raw_dirs: &[PathBuf]) -> PathBuf {
+fn find_local(filename: &str, raw_dirs: &[PathBuf]) -> Option<PathBuf> {
     let basename = Path::new(filename).file_name().unwrap();
     for d in raw_dirs {
         for cand in [d.join(filename), d.join(basename)] {
             if cand.exists() {
-                return cand;
+                return Some(cand);
             }
         }
+    }
+    None
+}
+
+fn fetch(
+    client: &HFClientSync,
+    owner: &str,
+    name: &str,
+    filename: &str,
+    raw_dirs: &[PathBuf],
+) -> PathBuf {
+    if let Some(local) = find_local(filename, raw_dirs) {
+        return local;
     }
     print!("downloading {filename}... ");
     stdout().flush().unwrap();
     client
-        .model(REPO_OWNER, REPO_NAME)
+        .model(owner, name)
         .download_file()
         .filename(filename)
         .send()
         .unwrap()
 }
 
-fn run_step(idx: usize, dst: &Path, force: bool, build: impl FnOnce()) {
+fn extract_shards_from_index(index_path: &Path) -> Vec<String> {
+    let text = read_to_string(index_path).unwrap();
+    let wm_start = text.find("\"weight_map\"").unwrap_or(0);
+    let mut shards = BTreeSet::new();
+    for seg in text[wm_start..].split('"') {
+        if seg.ends_with(".safetensors") {
+            let name = Path::new(seg).file_name().unwrap().to_str().unwrap();
+            shards.insert(name.to_string());
+        }
+    }
+    assert!(
+        !shards.is_empty(),
+        "no safetensors shards found in {}",
+        index_path.display()
+    );
+    shards.into_iter().collect()
+}
+
+fn fetch_sharded(
+    client: &HFClientSync,
+    owner: &str,
+    name: &str,
+    subdir: &str,
+    single_file: &str,
+    index_file: &str,
+    raw_dirs: &[PathBuf],
+) -> Vec<PathBuf> {
+    let single_rel = format!("{subdir}/{single_file}");
+    if let Some(p) = find_local(&single_rel, raw_dirs) {
+        return vec![p];
+    }
+    let idx_rel = format!("{subdir}/{index_file}");
+    let idx_path = fetch(client, owner, name, &idx_rel, raw_dirs);
+    extract_shards_from_index(&idx_path)
+        .into_iter()
+        .map(|s| fetch(client, owner, name, &format!("{subdir}/{s}"), raw_dirs))
+        .collect()
+}
+
+fn run_step(idx: usize, total: usize, dst: &Path, force: bool, build: impl FnOnce()) {
     let name = dst.file_name().unwrap().to_str().unwrap();
-    print!("[{idx}/5] {name:<22} ");
+    print!("[{idx}/{total}] {name:<22} ");
     stdout().flush().unwrap();
     if !force && dst.exists() {
         println!("skipped");
@@ -975,14 +1814,32 @@ fn run_step(idx: usize, dst: &Path, force: bool, build: impl FnOnce()) {
 }
 
 pub fn run(args: &[String]) {
+    if args.is_empty() || matches!(args[0].as_str(), "-h" | "--help") {
+        println!(
+            "Usage: {} install <sd35|zimage> [--force] [--raw-dir <DIR>]",
+            env!("CARGO_PKG_NAME")
+        );
+        if args.is_empty() {
+            exit(1);
+        }
+        return;
+    }
+    let model = match args[0].as_str() {
+        "sd35" => "sd35",
+        "zimage" => "zimage",
+        other => {
+            eprintln!("Error: unknown model `{other}` (expected `sd35` or `zimage`)");
+            exit(1);
+        }
+    };
     let mut force = false;
     let mut search_dirs = Vec::new();
-    let mut i = 0;
+    let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
             "-h" | "--help" => {
                 println!(
-                    "Usage: {} install [--force] [--raw-dir <DIR> | <DIR>]",
+                    "Usage: {} install <sd35|zimage> [--force] [--raw-dir <DIR>]",
                     env!("CARGO_PKG_NAME")
                 );
                 return;
@@ -996,7 +1853,6 @@ pub fn run(args: &[String]) {
                 };
                 search_dirs.push(PathBuf::from(dir));
             }
-            other if !other.starts_with('-') => search_dirs.push(PathBuf::from(other)),
             other => {
                 eprintln!("Error: unknown flag `{other}`");
                 exit(1);
@@ -1004,54 +1860,123 @@ pub fn run(args: &[String]) {
         }
         i += 1;
     }
-    search_dirs.push(PathBuf::from("sd35_turbo_raw"));
-    let out_dir = crate::get_data_dir();
+    let out_dir = crate::engine::get_data_dir().join(model);
     create_dir_all(&out_dir).unwrap();
     let client = HFClientSync::new().unwrap();
     let t_all = Instant::now();
-    let clip_l_out = out_dir.join("clip_l.safetensors");
-    let clip_g_out = out_dir.join("clip_g.safetensors");
-    let t5_out = out_dir.join("t5xxl.safetensors");
-    let mmdit_out = out_dir.join("mmdit.safetensors");
-    let vae_out = out_dir.join("vae.safetensors");
-    let mut cached_ckpt: Option<PathBuf> = None;
-    run_step(1, &clip_l_out, force, || {
-        let src = fetch(&client, "text_encoders/clip_l.safetensors", &search_dirs);
-        convert_clip(&src, &clip_l_out, 768, 12);
-    });
-    run_step(2, &clip_g_out, force, || {
-        let src = fetch(&client, "text_encoders/clip_g.safetensors", &search_dirs);
-        convert_clip(&src, &clip_g_out, 1280, 32);
-    });
-    run_step(3, &t5_out, force, || {
-        let src = fetch(
-            &client,
-            "text_encoders/t5xxl_fp16.safetensors",
-            &search_dirs,
-        );
-        convert_t5(&src, &t5_out);
-    });
-    run_step(4, &mmdit_out, force, || {
-        let src = fetch(&client, "sd3.5_large_turbo.safetensors", &search_dirs);
-        convert_mmdit(&src, &mmdit_out);
-        cached_ckpt = Some(src);
-    });
-    run_step(5, &vae_out, force, || {
-        let vae_raw = search_dirs
-            .iter()
-            .flat_map(|d| {
-                [
-                    d.join("vae/diffusion_pytorch_model.safetensors"),
-                    d.join("diffusion_pytorch_model.safetensors"),
-                ]
-            })
-            .find(|p| p.exists())
-            .or(cached_ckpt)
-            .unwrap_or_else(|| fetch(&client, "sd3.5_large_turbo.safetensors", &search_dirs));
-        convert_vae(&vae_raw, &vae_out);
-    });
+    if model == "sd35" {
+        search_dirs.push(PathBuf::from("sd35_turbo_raw"));
+        let clip_l_out = out_dir.join("clip_l.safetensors");
+        let clip_g_out = out_dir.join("clip_g.safetensors");
+        let t5_out = out_dir.join("t5xxl.safetensors");
+        let mmdit_out = out_dir.join("mmdit.safetensors");
+        let vae_out = out_dir.join("vae.safetensors");
+        let mut cached_ckpt: Option<PathBuf> = None;
+        run_step(1, 5, &clip_l_out, force, || {
+            let src = fetch(
+                &client,
+                SD35_OWNER,
+                SD35_NAME,
+                "text_encoders/clip_l.safetensors",
+                &search_dirs,
+            );
+            convert_clip(&src, &clip_l_out, 768, 12);
+        });
+        run_step(2, 5, &clip_g_out, force, || {
+            let src = fetch(
+                &client,
+                SD35_OWNER,
+                SD35_NAME,
+                "text_encoders/clip_g.safetensors",
+                &search_dirs,
+            );
+            convert_clip(&src, &clip_g_out, 1280, 32);
+        });
+        run_step(3, 5, &t5_out, force, || {
+            let src = fetch(
+                &client,
+                SD35_OWNER,
+                SD35_NAME,
+                "text_encoders/t5xxl_fp16.safetensors",
+                &search_dirs,
+            );
+            convert_t5(&src, &t5_out);
+        });
+        run_step(4, 5, &mmdit_out, force, || {
+            let src = fetch(
+                &client,
+                SD35_OWNER,
+                SD35_NAME,
+                "sd3.5_large_turbo.safetensors",
+                &search_dirs,
+            );
+            convert_mmdit(&src, &mmdit_out);
+            cached_ckpt = Some(src);
+        });
+        run_step(5, 5, &vae_out, force, || {
+            let vae_raw = search_dirs
+                .iter()
+                .flat_map(|d| {
+                    [
+                        d.join("vae/diffusion_pytorch_model.safetensors"),
+                        d.join("diffusion_pytorch_model.safetensors"),
+                    ]
+                })
+                .find(|p| p.exists())
+                .or(cached_ckpt)
+                .unwrap_or_else(|| {
+                    fetch(
+                        &client,
+                        SD35_OWNER,
+                        SD35_NAME,
+                        "sd3.5_large_turbo.safetensors",
+                        &search_dirs,
+                    )
+                });
+            convert_vae(&vae_raw, &vae_out);
+        });
+    } else {
+        search_dirs.push(PathBuf::from("zimage_turbo_raw"));
+        let qwen_out = out_dir.join("qwen3.safetensors");
+        let s3dit_out = out_dir.join("s3dit.safetensors");
+        let vae_out = out_dir.join("vae.safetensors");
+        run_step(1, 3, &qwen_out, force, || {
+            let shards = fetch_sharded(
+                &client,
+                ZIMAGE_OWNER,
+                ZIMAGE_NAME,
+                "text_encoder",
+                "model.safetensors",
+                "model.safetensors.index.json",
+                &search_dirs,
+            );
+            convert_qwen3(&shards, &qwen_out);
+        });
+        run_step(2, 3, &s3dit_out, force, || {
+            let shards = fetch_sharded(
+                &client,
+                ZIMAGE_OWNER,
+                ZIMAGE_NAME,
+                "transformer",
+                "diffusion_pytorch_model.safetensors",
+                "diffusion_pytorch_model.safetensors.index.json",
+                &search_dirs,
+            );
+            convert_s3dit(&shards, &s3dit_out);
+        });
+        run_step(3, 3, &vae_out, force, || {
+            let src = fetch(
+                &client,
+                ZIMAGE_OWNER,
+                ZIMAGE_NAME,
+                "vae/diffusion_pytorch_model.safetensors",
+                &search_dirs,
+            );
+            convert_vae(&src, &vae_out);
+        });
+    }
     println!(
-        "Installed weights in {} ({:.2}s)",
+        "Installed {model} weights in {} ({:.2}s)",
         out_dir.display(),
         t_all.elapsed().as_secs_f32()
     );

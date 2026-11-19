@@ -9,6 +9,7 @@ const TOKENIZERS: &[(&str, &str, &str)] = &[
         "CLIP-ViT-bigG-14-laion2B-39B-b160k",
     ),
     ("tokenizer_t5.json", "google", "flan-t5-xxl"),
+    ("tokenizer_qwen3.json", "Qwen", "Qwen3-4B"),
 ];
 
 fn main() {

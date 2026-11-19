@@ -1003,7 +1003,7 @@ dependencies = [
 
 [[package]]
 name = "halodiffuse"
-version = "1.1.2"
+version = "1.2.0"
 dependencies = [
  "hf-hub",
  "libc",

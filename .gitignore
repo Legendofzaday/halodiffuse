@@ -2,10 +2,9 @@
 !*/
 !.cargo/config.toml
 !.github/workflows/shaderfmt.yml
-!assets/image.png
+!assets/*.png
 !shaders/*.comp
-!src/install.rs
-!src/main.rs
+!src/*.rs
 !.gitattributes
 !.gitignore
 !build.rs

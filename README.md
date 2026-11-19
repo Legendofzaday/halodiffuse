@@ -2,103 +2,85 @@
 
 ---
 
-[![Ryzen AI Max+](https://img.shields.io/badge/Ryzen-AI_Max+-F26522.svg?logo=amd&logoSize=auto)](https://www.amd.com/)
 [![Radeon Graphics](https://img.shields.io/badge/Radeon-Graphics-ED1C24.svg?logo=amd&logoSize=auto)](https://www.amd.com/)
 [![Rust: Nightly](https://img.shields.io/badge/Rust-Nightly-orange.svg?logo=rust&logoSize=auto)](https://www.rust-lang.org/)
 [![Vulkan: 1.3](https://img.shields.io/badge/Vulkan-1.3-AC162C.svg?logo=vulkan&logoSize=auto)](https://www.vulkan.org/)
 [![License: AGPL v3.0](https://img.shields.io/badge/License-AGPL_v3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
-[![Model: SD 3.5 Large Turbo](https://img.shields.io/badge/Model-SD_3.5_Large_Turbo-FFD21E.svg?logo=huggingface)](https://huggingface.co/stabilityai/stable-diffusion-3.5-large-turbo)
+
+Bare-metal Rust + Vulkan 1.3 FP16 text-to-image inference engine built around hand-written GLSL 460 cooperative-matrix compute shaders.
 
 ---
 
-## Quick Start
+### [stabilityai/stable-diffusion-3.5-large-turbo](https://huggingface.co/stabilityai/stable-diffusion-3.5-large-turbo)
 
-```shell
-# 1. Download and prepare weights into ~/.local/share/halodiffuse
-halodiffuse install
-# 2. Loads weights into memory
-halodiffuse start
-# 3. Generate 1024x1024 PNG images
-halodiffuse --prompt "A majestic cybernetic owl perched on an obsidian monolith inside a dark volcanic cavern, a blazing ring of amber and crimson plasma hovering like a halo behind its head, intricate brushed copper feathers and glowing optical glass eyes, volumetric mist, dramatic rim lighting, medium format photography, shallow depth of field" --path ~/Pictures/cat.png -seed 42
-# 4. Check weights status or stop to free memory
-halodiffuse status
-halodiffuse stop
-```
+![sd35 demo](assets/sd35.png)
 
-![demo image](assets/image.png)
+### [Tongyi-MAI/Z-Image-Turbo](https://huggingface.co/Tongyi-MAI/Z-Image-Turbo)
 
----
-
-## Requirements
-
-- **Hardware:** AMD Ryzen AI Max+ 395 Linux
-- **Model Access:** Accept the [Stability AI Community License](https://huggingface.co/stabilityai/stable-diffusion-3.5-large-turbo) on Hugging Face
-
----
-
-## Installation
-
-### 1. Install the binary
-
-```shell
-curl -LO https://github.com/Legendofzaday/halodiffuse/releases/latest/download/halodiffuse
-chmod +x halodiffuse
-sudo mv halodiffuse /usr/local/bin/
-```
-
-### 2. Prepare model weights
-
-`stabilityai/stable-diffusion-3.5-large-turbo` is a gated repository, make sure you have accepted its license on [Hugging Face](https://huggingface.co/spaces/stabilityai/stable-diffusion-3.5-large-turbo) and provide a [HF_TOKEN](https://huggingface.co/settings/tokens/new?preset=read-only)
-
-```shell
-# Download from Hugging Face and prepare weights automatically
-HF_TOKEN=hf_your_token_here halodiffuse install
-
-# Or prepare from an existing local model directory
-halodiffuse install --raw-dir /path/to/sd-3.5-large-turbo
-
-# Re-prepare and overwrite existing weight packs
-HF_TOKEN=hf_your_token_here halodiffuse install --force
-
-# Note: amdgpu.lockup_timeout is recommended to be increased and for optimal performance run in tty.
-```
-
----
-
-## CLI Reference
-
-```text
-Usage:
-  halodiffuse install [--force] [--raw-dir <DIR> | <DIR>]
-  halodiffuse start
-  halodiffuse stop
-  halodiffuse status
-  halodiffuse --prompt <TEXT> --path <FILE> [--seed <U64>]
-
-Options:
-  -p, --prompt <TEXT>  Text prompt
-  -o, --path <FILE>    Output PNG path (1024x1024 RGB8)
-  -s, --seed <U64>     RNG seed (random if omitted)
-  -h, --help           Show help
-  -V, --version        Show version
-```
+![zimage demo](assets/zimage.png)
 
 ---
 
 ## Benchmarks
 
-**Configuration:** Stable Diffusion 3.5 Large Turbo | `FP16` | `1024x1024` | `Batch Size 1`
+1024x1024, Batch 1, FP16/BF16 (end-to-end warm daemon: text encoding + denoising + VAE decode).
 
-> All engines were benchmarked with models **pre-loaded and warm in memory** to measure true per-image generation time.
+| Hardware                                 | Stack                        | SD 3.5 Large Turbo (4 steps) | Z-Image-Turbo (8 steps) |
+| :--------------------------------------- | :--------------------------- | :--------------------------: | :---------------------: |
+| **AMD Ryzen AI Max+ 395 (Radeon 8060S)** | **halodiffuse (Vulkan 1.3)** |            `4.6s`            |         `18.4s`         |
+| **NVIDIA RTX 5090**                      | TensorRT                     |            `1.2s`            |         `4.9s`          |
 
-| Engine                    | Backend      | Precision   | End-to-End (Warm) | Runtime                   |
-| :------------------------ | :----------- | :---------- | :---------------- | :------------------------ |
-| **`halodiffuse`**         | **`Vulkan`** | **`FP16`**  | **`4.6s`**       | **`~23.7 MB binary`**     |
-| **ComfyUI**               | ROCm         | BF16 / FP16 | ~11.8 – 14.5 s    | ~18 GB Python + ROCm venv |
-| **stable-diffusion.cpp**  | Vulkan       | FP16        | ~13.5 – 16.2 s    | ~50 MB binary             |
-| **HuggingFace Diffusers** | ROCm         | BF16 / FP16 | ~18.4 s+          | ~18 GB Python + ROCm venv |
+---
 
-**Note:** halodiffuse was tested on a proart px13 ai max+ 395 128GB on 7.3.4-300.fc45.x86_64 with 135W power limit.
+## Installation
+
+**Requires AI MAX+ 395 and Linux**
+
+**Note:** `stabilityai/stable-diffusion-3.5-large-turbo` is a gated repository. Make sure you have accepted its license on [Hugging Face](https://huggingface.co/stabilityai/stable-diffusion-3.5-large-turbo) and provide an [HF_TOKEN](https://huggingface.co/settings/tokens/new?preset=read-only).
+
+```shell
+curl -LO https://github.com/Legendofzaday/halodiffuse/releases/latest/download/halodiffuse
+chmod +x halodiffuse
+sudo mv halodiffuse /usr/local/bin/
+HF_TOKEN=<token> halodiffuse install sd35
+halodiffuse install zimage
+# --raw-dir <DIR> to use local weights instead of downloading
+# --force to overwrite or resume corrupted packs
+```
+
+---
+
+## Usage
+
+`halodiffuse` runs a lightweight background daemon per model over a Unix domain socket so weights stay resident in GPU memory between prompts.
+
+```shell
+halodiffuse --help
+# halodiffuse 1.2.0
+#
+#
+# Usage:
+#  halodiffuse install <sd35|zimage> [--force] [--raw-dir <DIR>]
+#  halodiffuse start <sd35|zimage>
+#  halodiffuse stop <sd35|zimage>
+#  halodiffuse status [sd35|zimage]
+#  halodiffuse <sd35|zimage> --prompt <TEXT> --path <FILE> [--seed <U64>]
+#
+# Options:
+#  -p, --prompt <TEXT>  Text prompt
+#  -o, --path <FILE>    Output PNG path
+#  -s, --seed <U64>     RNG seed
+#  -h, --help           Show help
+#  -V, --version        Show version
+
+halodiffuse start sd35
+halodiffuse start zimage
+halodiffuse sd35 --prompt "A cozy, quiet Japanese village nestled in green rolling hills at sunset, warm golden hour light casting long shadows, wooden traditional houses with glowing amber windows, lush cherry blossom trees in full bloom, soft mist in the valley, Studio Ghibli anime style, peaceful and nostalgic mood, wide-shot, 4k resolution." --path assets/sd35.png --seed 0
+halodiffuse zimage --prompt "A cozy, quiet Japanese village nestled in green rolling hills at sunset, warm golden hour light casting long shadows, wooden traditional houses with glowing amber windows, lush cherry blossom trees in full bloom, soft mist in the valley, Studio Ghibli anime style, peaceful and nostalgic mood, wide-shot, 4k resolution." --path assets/zimage.png --seed 0
+halodiffuse status
+halodiffuse stop sd35
+halodiffuse stop zimage
+```
 
 ---
 
@@ -119,6 +101,8 @@ GNU Affero General Public License for more details.
 You should have received a copy of the GNU Affero General Public License
 along with this program. If not, see https://www.gnu.org/licenses/.
 
-## Model License
+## Model Licenses
 
 The Stable Diffusion 3.5 Large Turbo model weights are governed by the [Stability AI Community License Agreement](https://huggingface.co/stabilityai/stable-diffusion-3.5-large-turbo/blob/main/LICENSE.md). `Powered by Stability AI`
+
+The Z-Image-Turbo model weights are governed by the [Apache License, Version 2.0](https://www.apache.org/licenses/LICENSE-2.0). `Powered by Tongyi-MAI`
