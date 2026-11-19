@@ -343,7 +343,7 @@ fn record_context_refiner_cmd(
             .record(&mut cmd);
         engine
             .bind(
-                "hgemm_m256_n11520_k3840.comp",
+                "hgemm_m256_4096_4352_n11520_k3840.comp",
                 [90, 2, 1],
                 &[
                     txt_norm.clone(),
@@ -372,7 +372,7 @@ fn record_context_refiner_cmd(
             .record(&mut cmd);
         engine
             .bind(
-                "hgemm_m256_n3840_k3840.comp",
+                "hgemm_m256_4096_4352_n3840_k3840.comp",
                 [30, 2, 1],
                 &[
                     txt_attn.clone(),
@@ -405,7 +405,7 @@ fn record_context_refiner_cmd(
             .record(&mut cmd);
         engine
             .bind(
-                "hgemm_m256_n10240_k3840_swiglu.comp",
+                "hgemm_m256_4096_4352_n10240_k3840_swiglu.comp",
                 [160, 2, 1],
                 &[
                     txt_norm.clone(),
@@ -417,7 +417,7 @@ fn record_context_refiner_cmd(
             .record(&mut cmd);
         engine
             .bind(
-                "hgemm_m256_n3840_k10240.comp",
+                "hgemm_m256_4096_4352_n3840_k10240.comp",
                 [30, 2, 1],
                 &[
                     txt_mlp.clone(),
@@ -520,7 +520,7 @@ fn record_s3dit_step_cmd(
             .record(&mut cmd);
         engine
             .bind(
-                "rmsnorm_adaln_m4096_d3840.comp",
+                "rmsnorm_adaln_m4096_4352_d3840.comp",
                 [4096, 1, 1],
                 &[
                     img.clone(),
@@ -532,7 +532,7 @@ fn record_s3dit_step_cmd(
             .record(&mut cmd);
         engine
             .bind(
-                "hgemm_m4096_n11520_k3840.comp",
+                "hgemm_m256_4096_4352_n11520_k3840.comp",
                 [90, 32, 1],
                 &[
                     img_norm.clone(),
@@ -561,7 +561,7 @@ fn record_s3dit_step_cmd(
             .record(&mut cmd);
         engine
             .bind(
-                "hgemm_m4096_n3840_k3840.comp",
+                "hgemm_m256_4096_4352_n3840_k3840.comp",
                 [30, 32, 1],
                 &[
                     img_attn.clone(),
@@ -572,7 +572,7 @@ fn record_s3dit_step_cmd(
             .record(&mut cmd);
         engine
             .bind(
-                "rmsnorm_d3840_gated_residual_m4096.comp",
+                "rmsnorm_d3840_gated_residual_m4096_4352.comp",
                 [4096, 1, 1],
                 &[
                     img_norm.clone(),
@@ -584,7 +584,7 @@ fn record_s3dit_step_cmd(
             .record(&mut cmd);
         engine
             .bind(
-                "rmsnorm_adaln_m4096_d3840.comp",
+                "rmsnorm_adaln_m4096_4352_d3840.comp",
                 [4096, 1, 1],
                 &[
                     img.clone(),
@@ -596,7 +596,7 @@ fn record_s3dit_step_cmd(
             .record(&mut cmd);
         engine
             .bind(
-                "hgemm_m4096_n10240_k3840_swiglu.comp",
+                "hgemm_m256_4096_4352_n10240_k3840_swiglu.comp",
                 [160, 32, 1],
                 &[
                     img_norm.clone(),
@@ -608,7 +608,7 @@ fn record_s3dit_step_cmd(
             .record(&mut cmd);
         engine
             .bind(
-                "hgemm_m4096_n3840_k10240.comp",
+                "hgemm_m256_4096_4352_n3840_k10240.comp",
                 [30, 32, 1],
                 &[
                     img_mlp.clone(),
@@ -619,7 +619,7 @@ fn record_s3dit_step_cmd(
             .record(&mut cmd);
         engine
             .bind(
-                "rmsnorm_d3840_gated_residual_m4096.comp",
+                "rmsnorm_d3840_gated_residual_m4096_4352.comp",
                 [4096, 1, 1],
                 &[
                     img_norm.clone(),
@@ -646,7 +646,7 @@ fn record_s3dit_step_cmd(
             .record(&mut cmd);
         engine
             .bind(
-                "rmsnorm_adaln_m4352_d3840.comp",
+                "rmsnorm_adaln_m4096_4352_d3840.comp",
                 [4352, 1, 1],
                 &[
                     ws.unified.clone(),
@@ -658,7 +658,7 @@ fn record_s3dit_step_cmd(
             .record(&mut cmd);
         engine
             .bind(
-                "hgemm_m4352_n11520_k3840.comp",
+                "hgemm_m256_4096_4352_n11520_k3840.comp",
                 [90, 34, 1],
                 &[
                     ws.unified_norm.clone(),
@@ -687,7 +687,7 @@ fn record_s3dit_step_cmd(
             .record(&mut cmd);
         engine
             .bind(
-                "hgemm_m4352_n3840_k3840.comp",
+                "hgemm_m256_4096_4352_n3840_k3840.comp",
                 [30, 34, 1],
                 &[
                     ws.unified_attn.clone(),
@@ -698,7 +698,7 @@ fn record_s3dit_step_cmd(
             .record(&mut cmd);
         engine
             .bind(
-                "rmsnorm_d3840_gated_residual_m4352.comp",
+                "rmsnorm_d3840_gated_residual_m4096_4352.comp",
                 [4352, 1, 1],
                 &[
                     ws.unified_norm.clone(),
@@ -710,7 +710,7 @@ fn record_s3dit_step_cmd(
             .record(&mut cmd);
         engine
             .bind(
-                "rmsnorm_adaln_m4352_d3840.comp",
+                "rmsnorm_adaln_m4096_4352_d3840.comp",
                 [4352, 1, 1],
                 &[
                     ws.unified.clone(),
@@ -722,7 +722,7 @@ fn record_s3dit_step_cmd(
             .record(&mut cmd);
         engine
             .bind(
-                "hgemm_m4352_n10240_k3840_swiglu.comp",
+                "hgemm_m256_4096_4352_n10240_k3840_swiglu.comp",
                 [160, 34, 1],
                 &[
                     ws.unified_norm.clone(),
@@ -734,7 +734,7 @@ fn record_s3dit_step_cmd(
             .record(&mut cmd);
         engine
             .bind(
-                "hgemm_m4352_n3840_k10240.comp",
+                "hgemm_m256_4096_4352_n3840_k10240.comp",
                 [30, 34, 1],
                 &[
                     ws.unified_mlp.clone(),
@@ -745,7 +745,7 @@ fn record_s3dit_step_cmd(
             .record(&mut cmd);
         engine
             .bind(
-                "rmsnorm_d3840_gated_residual_m4352.comp",
+                "rmsnorm_d3840_gated_residual_m4096_4352.comp",
                 [4352, 1, 1],
                 &[
                     ws.unified_norm.clone(),
