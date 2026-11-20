@@ -36,6 +36,8 @@ Bare-metal Rust + Vulkan 1.3 FP16 text-to-image inference engine built around ha
 
 **Note:** `stabilityai/stable-diffusion-3.5-large-turbo` is a gated repository. Make sure you have accepted its license on [Hugging Face](https://huggingface.co/stabilityai/stable-diffusion-3.5-large-turbo) and provide an [HF_TOKEN](https://huggingface.co/settings/tokens/new?preset=read-only).
 
+**Note:** `amdgpu.lockup_timeout to be set to 10s`
+
 ```shell
 curl -LO https://github.com/Legendofzaday/halodiffuse/releases/latest/download/halodiffuse
 chmod +x halodiffuse
