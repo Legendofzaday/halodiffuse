@@ -7,8 +7,6 @@
 [![Vulkan: 1.3](https://img.shields.io/badge/Vulkan-1.3-AC162C.svg?logo=vulkan&logoSize=auto)](https://www.vulkan.org/)
 [![License: AGPL v3.0](https://img.shields.io/badge/License-AGPL_v3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
-Bare-metal Rust + Vulkan 1.3 FP16 text-to-image inference engine built around hand-written GLSL 460 cooperative-matrix compute shaders.
-
 ---
 
 ### [stabilityai/stable-diffusion-3.5-large-turbo](https://huggingface.co/stabilityai/stable-diffusion-3.5-large-turbo)
@@ -51,8 +49,6 @@ halodiffuse install zimage
 ---
 
 ## Usage
-
-`halodiffuse` runs a lightweight background daemon per model over a Unix domain socket so weights stay resident in GPU memory between prompts.
 
 ```shell
 halodiffuse --help
