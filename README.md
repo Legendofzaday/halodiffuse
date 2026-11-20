@@ -54,7 +54,7 @@ halodiffuse install zimage
 
 ```shell
 halodiffuse --help
-# halodiffuse 1.2.0
+# halodiffuse 2.0.0
 #
 #
 # Usage:
