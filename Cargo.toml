@@ -1,6 +1,6 @@
 [package]
 name = "halodiffuse"
-version = "1.2.0"
+version = "2.0.1"
 edition = "2024"
 license = "AGPL-3.0-only"
 repository = "https://github.com/Legendofzaday/halodiffuse"

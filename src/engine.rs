@@ -274,7 +274,11 @@ impl Engine {
         let physical_device = instance
             .enumerate_physical_devices()
             .unwrap()
-            .next()
+            .find(|p| {
+                p.properties().vendor_id == 0x1002
+                    && p.properties().device_type
+                        == vulkano::device::physical::PhysicalDeviceType::IntegratedGpu
+            })
             .unwrap();
         let storage_offset_align = u64::from(
             physical_device
@@ -285,7 +289,10 @@ impl Engine {
         let queue_family_index = physical_device
             .queue_family_properties()
             .iter()
-            .position(|q| q.queue_flags.intersects(QueueFlags::COMPUTE))
+            .position(|q| {
+                q.queue_flags.intersects(QueueFlags::COMPUTE)
+                    && !q.queue_flags.intersects(QueueFlags::GRAPHICS)
+            })
             .unwrap() as u32;
         let (device, mut queues) = Device::new(
             physical_device,
