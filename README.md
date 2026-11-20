@@ -25,7 +25,7 @@ Bare-metal Rust + Vulkan 1.3 FP16 text-to-image inference engine built around ha
 
 | Hardware                                 | Stack                        | SD 3.5 Large Turbo (4 steps) | Z-Image-Turbo (8 steps) | Download |
 | :--------------------------------------- | :--------------------------- | :--------------------------: | :---------------------: | :------- |
-| **AMD Ryzen AI Max+ 395 (Radeon 8060S)** | **halodiffuse (Vulkan 1.3)** |            `4.6s`            |         `18.4s`         |  `34MB`  |
+| **AMD Ryzen AI Max+ 395 (Radeon 8060S)** | **halodiffuse (Vulkan 1.3)** |            `4.6s`            |         `18.4s`         |  `36MB`  |
 | **AMD Ryzen AI Max+ 395 (Radeon 8060S)** | **ComfyUI ROCm nightlies 2** |            `5.6s`            |         `24.2s`         |  `12GB`   |
 
 ---
