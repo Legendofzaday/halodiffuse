@@ -1,5 +1,6 @@
 #![feature(f16)]
 
+mod aie;
 mod engine;
 mod install;
 mod sd35;

@@ -1,0 +1,21 @@
+If:
+  PathMatch: src/.*
+CompileFlags:
+  Add:
+    - -std=c++17
+    - -I/opt/xilinx/xrt/include
+
+---
+If:
+  PathMatch: kernels/.*
+CompileFlags:
+  Compiler: /home/admin/npu-dev/.venv/lib/python3.12/site-packages/llvm-aie/bin/clang++
+  Add:
+    - --target=aie2p-none-unknown-elf
+    - -std=c++20
+    - -fno-exceptions
+    - -fno-rtti
+    - -D__AIEARCH__=21
+    - -DAIE_API_EMULATE_BFLOAT16_MMUL_WITH_BFP16
+    - -I/home/admin/npu-dev/.venv/lib/python3.12/site-packages/mlir_aie/include
+    - -Ikernels

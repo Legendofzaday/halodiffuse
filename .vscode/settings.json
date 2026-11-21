@@ -1,0 +1,9 @@
+{
+  "python.defaultInterpreterPath": "/home/admin/npu-dev/.venv/bin/python3",
+  "python.languageServer": "None",
+  "basedpyright.importStrategy": "useBundled",
+  "basedpyright.analysis.extraPaths": [
+    "/home/admin/npu-dev/.venv/lib/python3.12/site-packages/mlir_aie/python",
+    "${workspaceFolder}/kernels"
+  ]
+}

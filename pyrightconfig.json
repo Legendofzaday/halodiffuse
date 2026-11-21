@@ -1,0 +1,9 @@
+{
+  "venvPath": "/home/admin/npu-dev",
+  "venv": ".venv",
+  "pythonVersion": "3.12",
+  "extraPaths": [
+    "/home/admin/npu-dev/.venv/lib/python3.12/site-packages/mlir_aie/python",
+    "kernels"
+  ]
+}
